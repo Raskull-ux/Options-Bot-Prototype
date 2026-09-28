@@ -193,7 +193,7 @@ def collect_iv_snapshots(client: AlpacaClient, priority_symbols: list[str]) -> t
 
     for symbol in priority_symbols:
         try:
-            spot = client.get_latest_trade_price(symbol, feed=config.STOCK_BARS_FEED)
+            spot = client.get_latest_trade_price(symbol, feed=config.SPOT_PRICE_FEED)
         except AlpacaError as e:
             errors.append(f"{symbol}: latest trade failed: {e}")
             continue
