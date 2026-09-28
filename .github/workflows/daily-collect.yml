@@ -1,0 +1,43 @@
+name: Daily data collection
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 21:30 UTC = 5:30pm EDT / 4:30pm EST -- after market close year-round.
+    # Weekdays only; a market holiday just means near-empty new bars, which
+    # the script logs as per-symbol errors rather than failing the run.
+    - cron: "30 21 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run daily collector
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python daily_collect.py
+
+      - name: Commit updated data files
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Daily data collection: $(date -u +%Y-%m-%d)"
+            git push
+          fi
