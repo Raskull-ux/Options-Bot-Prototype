@@ -13,6 +13,16 @@ STOCK_BARS_FEED = "sip"          # full consolidated volume; free for daily bars
                                    # (only the most recent 15 min is restricted
                                    # on the free Basic plan -- irrelevant for
                                    # end-of-day daily bars)
+SPOT_PRICE_FEED = "iex"          # for a single "latest trade right now" lookup
+                                   # (used for ATM strike selection and as the
+                                   # Black-Scholes underlying price). SIP is
+                                   # NOT usable here on the free plan -- a
+                                   # real-time single-trade query hits the
+                                   # exact restriction that daily historical
+                                   # bars don't (confirmed 2026-09-28: HTTP 403
+                                   # "subscription does not permit querying
+                                   # recent SIP data"). Real-time IEX is free
+                                   # and already confirmed working.
 OPTION_QUOTE_FEED = "indicative"  # real bid/ask, but no real IV/greeks fields
                                    # (OPRA/Algo Trader Plus not subscribed --
                                    # revisit if that changes)
