@@ -1,0 +1,12 @@
+run_started_utc,optionable_universe_size,liquidity_eligible_today,unusual_activity_today,working_universe_cumulative,bar_rows_this_run,iv_snapshot_rows_this_run,earnings_rows_this_run,error_count,errors_sample
+2026-09-28T23:46:28.655706+00:00,6168,2579,33,2579,744927,0,36,150,"MDB: latest trade failed: GET https://data.alpaca.markets/v2/stocks/MDB/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | NU: latest trade failed: GET https://data.alpaca.markets/v2/stocks/NU/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | NTES: latest trade failed: GET https://data.alpaca.markets/v2/stocks/NTES/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | POR: latest trade failed: GET https://data.alpaca.markets/v2/stocks/POR/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | ADMA: latest trade failed: GET https://data.alpaca.markets/v2/stocks/ADMA/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | LGND: latest trade failed: GET https://data.alpaca.markets/v2/stocks/LGND/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | MTBA: latest trade failed: GET https://data.alpaca.markets/v2/stocks/MTBA/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | KOD: latest trade failed: GET https://data.alpaca.markets/v2/stocks/KOD/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | LQDA: latest trade failed: GET https://data.alpaca.markets/v2/stocks/LQDA/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+ | IWY: latest trade failed: GET https://data.alpaca.markets/v2/stocks/IWY/trades/latest -> HTTP 403: {""message"":""subscription does not permit querying recent SIP data""}
+"
