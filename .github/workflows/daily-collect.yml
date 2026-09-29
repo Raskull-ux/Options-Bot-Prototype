@@ -30,6 +30,9 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: python daily_collect.py
 
+      - name: Run signal engine
+        run: python signal_engine.py
+
       - name: Commit updated data files
         run: |
           git config user.name "options-bot"
