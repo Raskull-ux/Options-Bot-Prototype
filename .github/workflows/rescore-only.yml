@@ -1,0 +1,29 @@
+Run python diagnose_trend_candidates.py
+Loading data (no API calls)...
+Diagnosing 2026-09-28: 2577 scored symbols
+
+Computing real beta vs SPY for each scored symbol (120-day trailing regression)...
+  -> beta computed for 2577 symbols
+
+=== TEST 1: correlation between beta and the signal ===
+  corr(beta, trend_T)              = +0.126
+  corr(beta, trend_candidate flag) = -0.096
+  (near 0 = beta isn't driving the signal; strongly positive = beta leakage is likely real)
+
+=== TEST 2: trend-candidate rate by beta quartile ===
+  Q1 (lowest beta): 49.0% flagged as candidates
+  Q2: 55.1% flagged as candidates
+  Q3: 57.0% flagged as candidates
+  Q4 (highest beta): 39.1% flagged as candidates
+  (roughly FLAT across quartiles = fine; rising sharply with beta = beta leakage)
+
+=== TEST 3: direction split among candidates vs. the market's own move ===
+  candidates: 201 bullish, 1089 bearish (15.6% bullish)
+  SPY's own return over the same 22-day window: -0.06%
+  (if candidates are overwhelmingly bullish AND SPY was up over this window -> strong sign of beta leakage)
+
+=== TEST 4: how extreme is the T distribution, overall ===
+  median |T| among scored symbols: 0.882
+  fraction with |T| >= threshold (0.8805): 50.1%
+  (calibrated null rate under pure noise is 42.4% -- meaningfully higher than that across a full market
+   is not automatically wrong, since real momentum exists, but should be interpreted alongside tests 1-3 above)
