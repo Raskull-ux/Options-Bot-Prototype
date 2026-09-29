@@ -60,8 +60,10 @@ LIQUIDITY_LOOKBACK_DAYS = 35      # calendar days of bars pulled for the
                                     # weekends/holidays are subtracted out
 
 # Reference instruments for regime gates and beta/sector adjustment --
-# NOT traded directly, kept separate from the tradable universe.
-REFERENCE_ETFS = ["SPY", "XLK", "XLF", "XLE", "XLY", "XLV", "XLI", "XLB", "IWM", "VIXY"]
+# NOT traded directly, kept separate from the tradable universe. Full 11
+# GICS sector ETFs, since the liquid universe (unlike the old hardcoded seed
+# list) naturally includes utilities, staples, communications, real estate.
+REFERENCE_ETFS = ["SPY", "XLK", "XLF", "XLE", "XLY", "XLP", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC", "VIXY"]
 
 # ---------------------------------------------------------------------------
 # Unusual-activity ("viral mover") detection.
@@ -92,9 +94,27 @@ VOLATILITY_LOOKBACK_DAYS = 20
 # ---------------------------------------------------------------------------
 # Signal thresholds (from the research record)
 # ---------------------------------------------------------------------------
-TREND_STRENGTH_MIN_ABS = 0.80     # Dao et al. (2016) hard-capped breakeven
-                                    # for a discrete single-contract bet;
-                                    # |T| below this => expected P&L negative
+TREND_STRENGTH_MIN_ABS = 0.8805   # NOT the literal 0.80 from Dao et al. -- that
+                                    # number was derived for a different, continuous
+                                    # trend-signal formulation. Tested on THIS
+                                    # implementation (2026-09-29): a literal 0.80
+                                    # threshold let through ~47% of pure-noise trials
+                                    # instead of the intended ~42% (a clean |T|>=0.80
+                                    # normal-theory threshold's real meaning), because
+                                    # normalizing by an ESTIMATED volatility on a small
+                                    # sample produces fatter tails than a clean normal
+                                    # reference. Widening the EWMA lambda did not fix
+                                    # this (confirmed by testing, not assumed) -- the
+                                    # excess variance is intrinsic to the small-sample
+                                    # construction. This value is empirically calibrated
+                                    # (lib/signals.calibrate_trend_threshold, 200k-trial
+                                    # Monte Carlo, fixed seed, reproducible) to give the
+                                    # SAME selectivity |T|=0.80 is supposed to represent,
+                                    # while losing under 2 percentage points of power to
+                                    # detect a real trend (88.6% vs 89.8% at a realistic
+                                    # drift, tested). Re-run the calibration if
+                                    # TREND_LOOKBACK_DAYS, TREND_SKIP_RECENT_DAYS, or
+                                    # EWMA_VOL_LAMBDA ever change.
 HORIZON_CANDIDATES_DAYS = [1, 2, 3, 5, 10, 20]  # signature-plot horizons for
                                                   # this bot's own VR(T) calibration
 MIN_HISTORY_DAYS_FOR_SCREEN = 260  # Lo-MacKinlay / panic-state percentile
@@ -126,3 +146,56 @@ EARNINGS_FILE = f"{DATA_DIR}/earnings_calendar.csv"
 RUN_LOG_FILE = f"{DATA_DIR}/collector_run_log.csv"
 UNUSUAL_ACTIVITY_FILE = f"{DATA_DIR}/unusual_activity.csv"
 UNIVERSE_MEMBERSHIP_FILE = f"{DATA_DIR}/universe_membership.csv"
+SECTOR_PROFILES_FILE = f"{DATA_DIR}/sector_profiles.csv"
+UNMAPPED_INDUSTRIES_FILE = f"{DATA_DIR}/unmapped_industries.csv"
+DAILY_SIGNALS_FILE = f"{DATA_DIR}/daily_signals.csv"
+REGIME_STATE_FILE = f"{DATA_DIR}/regime_state.csv"
+
+# ---------------------------------------------------------------------------
+# Signal engine (Phase 2)
+# ---------------------------------------------------------------------------
+# Trend signal construction
+TREND_LOOKBACK_DAYS = 20          # window for the volatility-normalized trend score
+TREND_SKIP_RECENT_DAYS = 2        # exclude the most recent 1-2 days (Goyal & Wahal, 2015 --
+                                    # short-term reversal contamination right at the ranking edge)
+EWMA_VOL_LAMBDA = 0.5             # RAMOM-style signal-construction vol (Dudler/Gmur/Malamud, 2015);
+                                    # distinct from the 0.94 RiskMetrics lambda used for position sizing
+
+# NOTE ON THE TREND-STRENGTH FORMULA: this is implemented from the research
+# record's DESCRIPTION of Dao et al. (2016)'s construction, not from the
+# paper's own equations (which aren't available here). It's a principled,
+# volatility-normalized signal-to-noise construction consistent with the
+# |T|~=0.80 breakeven the record describes -- treat it as a documented
+# interpretation, not a verified line-for-line reproduction.
+
+# Panic-state regime gate: RULE-BASED APPROXIMATION, not the full Daniel/
+# Jagannathan/Kim (2019) Hidden Markov Model. Flags "elevated risk of a
+# momentum-crash-style rebound" using three observable conditions together:
+PANIC_MARKET_DECLINE_LOOKBACK_DAYS = 20
+PANIC_MARKET_DECLINE_THRESHOLD = -0.08   # SPY down >= 8% over the lookback
+PANIC_VOL_PERCENTILE_LOOKBACK_DAYS = 252
+PANIC_VOL_PERCENTILE_THRESHOLD = 0.85    # today's realized vol in the top 15% of its own trailing year
+PANIC_PRIOR_RUN_LOOKBACK_DAYS = 60
+PANIC_PRIOR_RUN_THRESHOLD = 0.15         # a prior extended directional run >= 15%
+
+# Aggregate illiquidity + dispersion gates -- computed from the working
+# universe's OWN daily returns/dollar volumes (a real, direct proxy), not a
+# separate external index feed.
+ILLIQUIDITY_PERCENTILE_LOOKBACK_DAYS = 252
+ILLIQUIDITY_PERCENTILE_THRESHOLD = 0.85
+DISPERSION_PERCENTILE_LOOKBACK_DAYS = 252
+DISPERSION_PERCENTILE_THRESHOLD = 0.85
+
+# Earnings sleeve (Jansen & Nikiforov, 2016 -- "Fear and Greed")
+EARNINGS_LOOKAHEAD_DAYS = 5
+EARNINGS_PRE_MOVE_LOOKBACK_DAYS = 5
+EARNINGS_PRE_MOVE_THRESHOLDS = [0.05, 0.10, 0.15]
+
+# IV-rank gate (Chan, 2017) -- needs real IV history; will report
+# "insufficient_history" honestly until enough real snapshots accumulate
+IV_RANK_MIN_HISTORY_DAYS = 60
+IV_RANK_LOW_THRESHOLD = 0.30  # only buy when current IV is below this percentile of its own history
+
+# Sector-profile cache: refreshed infrequently (industry classification
+# rarely changes), NOT re-fetched every daily run
+SECTOR_PROFILE_MAX_AGE_DAYS = 90
