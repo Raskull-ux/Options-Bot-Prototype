@@ -1,0 +1,40 @@
+name: Sector profile cache
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly -- sector classification barely ever changes, and this is
+    # rate-limited against Finnhub's free tier so it isn't run daily.
+    - cron: "0 12 * * 0"  # Sundays, 12:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Build sector profile cache
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python build_sector_profiles.py
+
+      - name: Commit updated sector data
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/sector_profiles.csv data/unmapped_industries.csv
+          if git diff --cached --quiet; then
+            echo "No sector data changes to commit."
+          else
+            git commit -m "Sector profile cache update: $(date -u +%Y-%m-%d)"
+            git push
+          fi
