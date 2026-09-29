@@ -1,0 +1,2 @@
+date,spy_decline_20d,spy_vol_percentile,spy_prior_run_60d,panic_state_flag,crowding_flag,illiquidity_percentile,illiquidity_flag,dispersion_percentile,dispersion_flag
+2026-09-28,-0.004861246506791428,0.34523809523809523,0.027967990547544286,False,False,0.04365079365079365,False,0.5714285714285714,False
