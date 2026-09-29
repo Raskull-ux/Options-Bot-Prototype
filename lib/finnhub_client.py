@@ -37,3 +37,16 @@ class FinnhubClient:
         if symbols:
             rows = [row for row in rows if row.get("symbol") in symbols]
         return rows
+
+    def get_company_profile(self, symbol: str) -> dict:
+        """
+        Returns Finnhub's /stock/profile2 response for a symbol, notably
+        'finnhubIndustry' -- a real industry classification string, but NOT
+        one with a published, guaranteed-complete enum of values. Treat the
+        returned industry as raw data to be mapped (see lib/sector_map.py),
+        not as a known-safe key into a hardcoded table.
+        """
+        r = requests.get(f"{BASE}/stock/profile2", params={"symbol": symbol, "token": self.api_key}, timeout=self.timeout)
+        if r.status_code != 200:
+            raise FinnhubError(f"HTTP {r.status_code}: {r.text[:300]}")
+        return r.json()
