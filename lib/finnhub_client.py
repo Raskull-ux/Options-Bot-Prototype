@@ -50,3 +50,18 @@ class FinnhubClient:
         if r.status_code != 200:
             raise FinnhubError(f"HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
+
+    def get_us_symbol_types(self) -> list[dict]:
+        """
+        ONE bulk call (not rate-limited per symbol) that lists every symbol
+        Finnhub supports on the US exchange, each with a real security-type
+        classification (OpenFIGI standard: "Common Stock", "ETP", "ADR",
+        "REIT", etc.). This is the real, authoritative way to tell a common
+        stock apart from an ETF/fund -- NOT something to infer indirectly
+        from a blank industry field, which is also blank for other reasons
+        (new IPOs Finnhub hasn't profiled yet, some ADRs, etc).
+        """
+        r = requests.get(f"{BASE}/stock/symbol", params={"exchange": "US", "token": self.api_key}, timeout=60)
+        if r.status_code != 200:
+            raise FinnhubError(f"HTTP {r.status_code}: {r.text[:300]}")
+        return r.json()
