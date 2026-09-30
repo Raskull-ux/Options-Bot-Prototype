@@ -29,6 +29,7 @@ import config
 from lib.alpaca_client import AlpacaClient, AlpacaError
 from lib.finnhub_client import FinnhubClient, FinnhubError
 from lib.black_scholes import implied_vol
+from lib.symbol_filter import load_excluded_symbols
 
 
 def log(msg: str) -> None:
@@ -311,6 +312,15 @@ def main() -> int:
         return 1
     symbols = sorted({a["symbol"] for a in assets})
     log(f"  -> {len(symbols)} tradable, optionable, non-OTC equities")
+
+    excluded_fund_types, exclusion_data_available = load_excluded_symbols()
+    if exclusion_data_available:
+        before = len(symbols)
+        symbols = [s for s in symbols if s not in excluded_fund_types]
+        log(f"  -> excluded {before - len(symbols)} real ETP/closed-end-fund/open-end-fund symbols (Finnhub security-type data); {len(symbols)} remain")
+    else:
+        log("  WARNING: data/symbol_types.csv doesn't exist yet -- fund/ETP exclusion NOT applied this run. "
+            "Run build_symbol_types.py (Classify universe workflow) to enable it.")
 
     # ---- Step 2: light bar pull across the WHOLE optionable universe, for
     #      the liquidity screen and unusual-activity detection ----
