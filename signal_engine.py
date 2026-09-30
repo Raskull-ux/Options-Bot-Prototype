@@ -34,7 +34,9 @@ from lib.signals import (
     percentile_rank_of_latest,
     amihud_illiquidity,
     cross_sectional_dispersion,
+    average_true_range,
 )
+from lib.symbol_filter import load_excluded_symbols
 
 
 def log(msg: str) -> None:
@@ -69,6 +71,15 @@ def load_volume_panel() -> pd.DataFrame:
     bars = pd.read_csv(config.BARS_FILE, parse_dates=["date"])
     panel = bars.pivot_table(index="date", columns="symbol", values="volume", aggfunc="last")
     return panel.sort_index()
+
+
+def load_high_low_panels() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Wide DataFrames for high and low, same shape as the close price panel
+    -- needed for ATR, which the close-only panel can't support."""
+    bars = pd.read_csv(config.BARS_FILE, parse_dates=["date"])
+    high = bars.pivot_table(index="date", columns="symbol", values="high", aggfunc="last").sort_index()
+    low = bars.pivot_table(index="date", columns="symbol", values="low", aggfunc="last").sort_index()
+    return high, low
 
 
 def load_sector_map() -> dict[str, tuple[str, bool]]:
@@ -206,12 +217,21 @@ def main() -> int:
     log("Loading price/volume panels...")
     price_panel = load_price_panel()
     volume_panel = load_volume_panel()
+    high_panel, low_panel = load_high_low_panels()
     today = price_panel.index.max()
     log(f"  -> panel covers {price_panel.index.min().date()} to {today.date()}, {price_panel.shape[1]} symbols")
 
     membership = pd.read_csv(config.UNIVERSE_MEMBERSHIP_FILE)
     working_symbols = [s for s in sorted(membership["symbol"].unique()) if s in price_panel.columns]
     log(f"  -> {len(working_symbols)} working-universe symbols present in the price panel")
+
+    excluded_fund_types, exclusion_data_available = load_excluded_symbols()
+    if exclusion_data_available:
+        before = len(working_symbols)
+        working_symbols = [s for s in working_symbols if s not in excluded_fund_types]
+        log(f"  -> excluded {before - len(working_symbols)} real ETP/closed-end-fund/open-end-fund symbols already in the historical ledger; {len(working_symbols)} remain for scoring")
+    else:
+        log("  WARNING: data/symbol_types.csv doesn't exist yet -- fund/ETP exclusion NOT applied this run.")
 
     sector_map = load_sector_map()
     log(f"  -> {len(sector_map)} symbols have a cached real sector match (rest fall back to SPY)")
@@ -248,6 +268,26 @@ def main() -> int:
             continue
 
         raw_returns = np.log(prices).diff().dropna()
+
+        # ATR(14): stored as a reference for later stop-loss/target sizing
+        # (the not-yet-built contract-selection/paper-trading phases) --
+        # deliberately NOT used in the trend/regime gates above, which
+        # already have their own validated volatility normalization.
+        atr_status = "ok"
+        atr_14 = np.nan
+        atr_pct = np.nan
+        if symbol in high_panel.columns and symbol in low_panel.columns:
+            h = high_panel[symbol].reindex(prices.index)
+            l = low_panel[symbol].reindex(prices.index)
+            atr_series = average_true_range(h, l, prices, period=config.ATR_PERIOD)
+            atr_latest = atr_series.iloc[-1]
+            if not np.isnan(atr_latest):
+                atr_14 = atr_latest
+                atr_pct = atr_latest / prices.iloc[-1] if prices.iloc[-1] else np.nan
+            else:
+                atr_status = "insufficient_history"
+        else:
+            atr_status = "no_high_low_data"
 
         vr_row = {}
         for q in config.HORIZON_CANDIDATES_DAYS:
@@ -290,6 +330,9 @@ def main() -> int:
                 "sector_etf_used": sector_etf,
                 "used_real_sector_adjustment": used_real_sector,
                 "trend_candidate": trend_candidate,
+                "atr_14": atr_14,
+                "atr_pct": atr_pct,
+                "atr_status": atr_status,
                 **{f"regime_{k}": v for k, v in regime.items() if k != "date"},
                 **earnings_info,
                 "earnings_candidate": earnings_candidate,
