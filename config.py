@@ -150,6 +150,18 @@ SECTOR_PROFILES_FILE = f"{DATA_DIR}/sector_profiles.csv"
 UNMAPPED_INDUSTRIES_FILE = f"{DATA_DIR}/unmapped_industries.csv"
 SYMBOL_TYPES_FILE = f"{DATA_DIR}/symbol_types.csv"
 SYMBOL_TYPE_MAX_AGE_DAYS = 30  # exchange listing composition changes slowly
+
+# Real security types (from Finnhub's authoritative OpenFIGI-standard
+# classification, confirmed via build_symbol_types.py on 2026-09-30) that
+# are pooled/fund-like instruments, not individual companies with their own
+# idiosyncratic risk -- the underlying-selection research (beta, idio vol,
+# turnover, lottery demand) is about single companies and doesn't cleanly
+# apply to these. REIT, ADR, MLP, Ltd Part, etc. are deliberately NOT
+# excluded -- those are real individual entities, just with unusual
+# corporate structures.
+EXCLUDED_SECURITY_TYPES = {"ETP", "Closed-End Fund", "Open-End Fund"}
+
+ATR_PERIOD = 14  # standard Wilder ATR lookback
 DAILY_SIGNALS_FILE = f"{DATA_DIR}/daily_signals.csv"
 REGIME_STATE_FILE = f"{DATA_DIR}/regime_state.csv"
 
