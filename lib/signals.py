@@ -148,6 +148,26 @@ def cross_sectional_dispersion(returns_by_symbol: pd.DataFrame) -> pd.Series:
     return returns_by_symbol.std(axis=1, ddof=1)
 
 
+def average_true_range(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """
+    Standard Wilder's ATR: true range = max(high-low, |high-prev_close|,
+    |low-prev_close|), smoothed with Wilder's EMA (alpha=1/period) -- the
+    authentic, standard ATR definition, not a simple moving average variant.
+    Real dollar-terms daily range, not a close-to-close return measure --
+    this is what actually informs a realistic stop-loss/target distance,
+    which the trend/candidate-selection gates elsewhere do NOT need (they
+    already have their own validated volatility normalization).
+    """
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    # Wilder's smoothing = EMA with alpha = 1/period (NOT the standard
+    # 2/(period+1) EMA alpha -- this distinction matters for matching the
+    # real, standard ATR values traders and platforms actually report)
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+
 def calibrate_trend_threshold(
     lookback: int,
     skip_recent: int,
