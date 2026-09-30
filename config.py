@@ -148,6 +148,8 @@ UNUSUAL_ACTIVITY_FILE = f"{DATA_DIR}/unusual_activity.csv"
 UNIVERSE_MEMBERSHIP_FILE = f"{DATA_DIR}/universe_membership.csv"
 SECTOR_PROFILES_FILE = f"{DATA_DIR}/sector_profiles.csv"
 UNMAPPED_INDUSTRIES_FILE = f"{DATA_DIR}/unmapped_industries.csv"
+SYMBOL_TYPES_FILE = f"{DATA_DIR}/symbol_types.csv"
+SYMBOL_TYPE_MAX_AGE_DAYS = 30  # exchange listing composition changes slowly
 DAILY_SIGNALS_FILE = f"{DATA_DIR}/daily_signals.csv"
 REGIME_STATE_FILE = f"{DATA_DIR}/regime_state.csv"
 
