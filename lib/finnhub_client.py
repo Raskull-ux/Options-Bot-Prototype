@@ -38,6 +38,30 @@ class FinnhubClient:
             rows = [row for row in rows if row.get("symbol") in symbols]
         return rows
 
+    def get_earnings_range(self, start, end, symbols: set[str] | None = None, chunk_days: int = 30) -> list[dict]:
+        """
+        Earnings calendar between two dates (inclusive), requested in chunks
+        so a long backfill doesn't hit a per-response row cap. Past dates are
+        needed by the post-earnings-drift sleeve (it measures the reaction
+        around announcements that already happened).
+        """
+        rows: list[dict] = []
+        cur = start
+        while cur <= end:
+            chunk_end = min(cur + timedelta(days=chunk_days - 1), end)
+            r = requests.get(
+                f"{BASE}/calendar/earnings",
+                params={"from": cur.isoformat(), "to": chunk_end.isoformat(), "token": self.api_key},
+                timeout=self.timeout,
+            )
+            if r.status_code != 200:
+                raise FinnhubError(f"HTTP {r.status_code} for {cur}..{chunk_end}: {r.text[:300]}")
+            rows.extend(r.json().get("earningsCalendar", []))
+            cur = chunk_end + timedelta(days=1)
+        if symbols:
+            rows = [row for row in rows if row.get("symbol") in symbols]
+        return rows
+
     def get_company_profile(self, symbol: str) -> dict:
         """
         Returns Finnhub's /stock/profile2 response for a symbol, notably
