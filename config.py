@@ -124,8 +124,9 @@ MIN_HISTORY_DAYS_FOR_SCREEN = 260  # Lo-MacKinlay / panic-state percentile
 # Options selection for the daily IV-history snapshot (Phase 1 only builds
 # the data layer -- this defines what we sample, not what we trade)
 # ---------------------------------------------------------------------------
-SNAPSHOT_MIN_DTE = 3        # Bhansali & Holdom tenor-matching: don't sample
-SNAPSHOT_MAX_DTE = 10       # contracts far outside the 1-5 day signal horizon
+SNAPSHOT_MIN_DTE = 7        # widened 2026-10-03: holds now run up to ~1 month
+SNAPSHOT_MAX_DTE = 45
+SNAPSHOT_TARGET_DTE = 30    # sample the nearest expiry >= MIN and the one closest to 30 DTE
 SNAPSHOT_STRIKES_EACH_SIDE = 3  # strikes above and below spot to sample
 
 # The full liquid universe can run 1,000-2,500+ names; pulling real options
@@ -164,6 +165,10 @@ EXCLUDED_SECURITY_TYPES = {"ETP", "Closed-End Fund", "Open-End Fund"}
 ATR_PERIOD = 14  # standard Wilder ATR lookback
 DAILY_SIGNALS_FILE = f"{DATA_DIR}/daily_signals.csv"
 REGIME_STATE_FILE = f"{DATA_DIR}/regime_state.csv"
+SIGNALS_FILE = f"{DATA_DIR}/signals.csv"          # fired sleeve signals (what alerts are built from)
+VIX_TERM_FILE = f"{DATA_DIR}/vix_term.csv"
+EARNINGS_DAYS_BACK = 10           # daily pull window behind today (drift sleeve needs recent past)
+EARNINGS_SEED_DAYS_BACK = 120     # one-time backfill so the drift pool isn't empty on day one
 
 # ---------------------------------------------------------------------------
 # Signal engine (Phase 2)
@@ -182,33 +187,70 @@ EWMA_VOL_LAMBDA = 0.5             # RAMOM-style signal-construction vol (Dudler/
 # |T|~=0.80 breakeven the record describes -- treat it as a documented
 # interpretation, not a verified line-for-line reproduction.
 
-# Panic-state regime gate: RULE-BASED APPROXIMATION, not the full Daniel/
-# Jagannathan/Kim (2019) Hidden Markov Model. Flags "elevated risk of a
-# momentum-crash-style rebound" using three observable conditions together:
-PANIC_MARKET_DECLINE_LOOKBACK_DAYS = 20
-PANIC_MARKET_DECLINE_THRESHOLD = -0.08   # SPY down >= 8% over the lookback
-PANIC_VOL_PERCENTILE_LOOKBACK_DAYS = 252
-PANIC_VOL_PERCENTILE_THRESHOLD = 0.85    # today's realized vol in the top 15% of its own trailing year
-PANIC_PRIOR_RUN_LOOKBACK_DAYS = 60
-PANIC_PRIOR_RUN_THRESHOLD = 0.15         # a prior extended directional run >= 15%
+# ===========================================================================
+# REVISION 2026-10-03: research basis is now RESEARCH_RECORD_v2_OPUS.md.
+# The 1-5 day trend sleeve is REMOVED as an entry signal (v2: not supported;
+# liquid stocks reverse at short horizons). VR/T are still computed and
+# logged per symbol as diagnostics only. The old panic/crowding gates are
+# replaced by regime LABELS (v2: monthly evidence = slow labels, not triggers).
+# Every threshold below is tagged [paper] = taken from the cited study, or
+# [eng] = an engineering choice of mine, disclosed, to be judged on paper data.
+# ===========================================================================
 
-# Aggregate illiquidity + dispersion gates -- computed from the working
-# universe's OWN daily returns/dollar volumes (a real, direct proxy), not a
-# separate external index feed.
+# --- Regime labels --------------------------------------------------------
+# Panic state, defined the way Daniel & Moskowitz (2016) define it:
+# trailing 24-month market return < 0 AND high forecast market variance.
+PANIC_BEAR_LOOKBACK_DAYS = 504          # [paper] 24 months of trading days
+PANIC_VAR_WINDOW_DAYS = 21              # [eng] realized-variance proxy for D-M's GARCH forecast
+PANIC_VAR_PERCENTILE = 0.50             # [eng] "high" = above median of available history
+SPY_HISTORY_LOOKBACK_DAYS = 800         # [eng] SPY needs >504 trading days for the bear label
+
+# Aggregate illiquidity + dispersion: recorded as labels on every signal.
 ILLIQUIDITY_PERCENTILE_LOOKBACK_DAYS = 252
 ILLIQUIDITY_PERCENTILE_THRESHOLD = 0.85
 DISPERSION_PERCENTILE_LOOKBACK_DAYS = 252
 DISPERSION_PERCENTILE_THRESHOLD = 0.85
 
-# Earnings sleeve (Jansen & Nikiforov, 2016 -- "Fear and Greed")
-EARNINGS_LOOKAHEAD_DAYS = 5
-EARNINGS_PRE_MOVE_LOOKBACK_DAYS = 5
-EARNINGS_PRE_MOVE_THRESHOLDS = [0.05, 0.10, 0.15]
+# VIX term structure (Cboe primary, FRED backup -- both confirmed 2026-10-03)
+VIX_MEDIAN_LOOKBACK_DAYS = 2520         # [eng] ~10y trailing median for Jacobs' high/low VIX split
+VIX_STALE_DAYS = 4                      # flag if newest VIX row is older than this
 
-# IV-rank gate (Chan, 2017) -- needs real IV history; will report
-# "insufficient_history" honestly until enough real snapshots accumulate
+# --- Sleeve 1: earnings reversal (Jansen & Nikiforov 2016, "Fear and Greed")
+EARN_REV_WINDOW_DAYS = 5                # [paper] days -5..-1 before the announcement
+EARN_REV_THRESHOLD = 0.10               # [paper] central |abnormal return| screen
+EARN_REV_LOG_THRESHOLDS = [0.05, 0.10, 0.15]  # [paper] all three logged; only 10% fires
+# Timing deviation (disclosed): the bot runs after the close. For after-close
+# (amc) reports it enters day 0 and the screen is exactly days -5..-1. For
+# before-open (bmo) or unknown-time reports it must enter on day -1 to be in
+# before the release, so its screen is days -6..-2. Flagged on every row.
+
+# --- Sleeve 2: post-earnings drift (Novy-Marx: CAR3 continuation, monthly)
+PEAD_CAR_WINDOW = (-1, 1)               # [paper] CAR3 = abnormal return days -1..+1
+PEAD_POOL_LOOKBACK_DAYS = 63            # [eng] cross-sectional pool of recent announcers
+PEAD_MIN_POOL = 50                      # [eng] refuse to rank on a thinner pool
+PEAD_TAIL_PERCENTILE = 0.10             # [paper-style] extreme deciles
+PEAD_HOLD_DAYS = 21                     # [paper] monthly holding period
+
+# --- Sleeve 3: short-term reversal, calls only (DLS 2014; Jacobs 2015)
+STR_FORMATION_DAYS = 21                 # [paper] prior-month return
+STR_HOLD_DAYS = 21                      # [paper] one-month hold
+STR_TAIL_PERCENTILE = 0.10              # [paper-style] bottom decile, sector-adjusted
+STR_MAX_SIGNALS = 10                    # [eng] a decile is ~190 names; alert the 10 most extreme
+STR_REQUIRE_VIX_ABOVE_MEDIAN = True     # [paper] Jacobs: STR ~0 below median VIX
+
+# --- Sleeve 4: next-day volume reversal (Llorente et al. 2002) -- HYPOTHESIS
+VOLREV_LARGE_TERCILE = 2 / 3            # [eng] top third by dollar volume = "large, liquid" proxy
+VOLREV_VOLUME_BASELINE_DAYS = 200       # [paper] 200-day volume baseline
+VOLREV_VOLUME_RATIO = 2.0               # [eng] Llorente is a regression, no threshold given
+VOLREV_MOVE_SIGMA = 2.5                 # [eng] move size vs 20-day abnormal-return SD
+VOLREV_MAX_SIGNALS = 10                 # [eng]
+VOLREV_HOLD_DAYS = 1                    # [paper] next-day effect
+
+# --- Sleeve 5: SPY volatility straddle (Johnson 2017)
+IDXVOL_MAX_HOLD_DAYS = 21               # [paper] next-day to next-month evidence
+
+# IV rank: logged as a diagnostic only (v2: untested heuristic, not a gate)
 IV_RANK_MIN_HISTORY_DAYS = 60
-IV_RANK_LOW_THRESHOLD = 0.30  # only buy when current IV is below this percentile of its own history
 
 # Sector-profile cache: refreshed infrequently (industry classification
 # rarely changes), NOT re-fetched every daily run
