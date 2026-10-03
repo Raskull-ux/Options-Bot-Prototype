@@ -1,0 +1,39 @@
+name: Replay recent signals
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many past trading days to replay"
+        required: true
+        default: "10"
+
+permissions:
+  contents: write
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Replay
+        run: python replay_signals.py ${{ github.event.inputs.days }}
+
+      - name: Commit replay results
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/replay_signals.csv
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Signal replay: $(date -u +%Y-%m-%d)"
+            git push
+          fi
