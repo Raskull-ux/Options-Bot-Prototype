@@ -21,7 +21,7 @@ back to the repo so history survives between runs.
 import os
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -30,6 +30,7 @@ from lib.alpaca_client import AlpacaClient, AlpacaError
 from lib.finnhub_client import FinnhubClient, FinnhubError
 from lib.black_scholes import implied_vol
 from lib.symbol_filter import load_excluded_symbols
+from lib.vix_term import fetch_vix_term
 
 
 def log(msg: str) -> None:
@@ -208,71 +209,85 @@ def collect_iv_snapshots(client: AlpacaClient, priority_symbols: list[str]) -> t
             continue
 
         expirations = sorted({c["expiration_date"] for c in contracts})
-        nearest_exp = expirations[0]
-        exp_contracts = [c for c in contracts if c["expiration_date"] == nearest_exp]
-        target_strikes = pick_atm_strikes(exp_contracts, spot, config.SNAPSHOT_STRIKES_EACH_SIDE)
-        if not target_strikes:
-            continue
-        strike_gte, strike_lte = min(target_strikes), max(target_strikes)
-
-        try:
-            snapshots = client.get_option_snapshots(
-                symbol, feed=config.OPTION_QUOTE_FEED, expiration_date=nearest_exp,
-                strike_gte=strike_gte, strike_lte=strike_lte,
-            )
-        except AlpacaError as e:
-            errors.append(f"{symbol}: snapshot fetch failed: {e}")
-            continue
-
-        contract_by_sym = {c["symbol"]: c for c in exp_contracts}
-        exp_date = datetime.strptime(nearest_exp, "%Y-%m-%d").date()
-        dte = (exp_date - today).days
-        T_years = max(dte, 0) / 365.0
-
-        for contract_symbol, snap in snapshots.items():
-            c = contract_by_sym.get(contract_symbol)
-            if c is None or float(c["strike_price"]) not in target_strikes:
+        target_exp = min(
+            expirations,
+            key=lambda e: abs((datetime.strptime(e, "%Y-%m-%d").date() - today).days - config.SNAPSHOT_TARGET_DTE),
+        )
+        for chosen_exp in dict.fromkeys([expirations[0], target_exp]):  # dedupe, keep order
+            exp_contracts = [c for c in contracts if c["expiration_date"] == chosen_exp]
+            target_strikes = pick_atm_strikes(exp_contracts, spot, config.SNAPSHOT_STRIKES_EACH_SIDE)
+            if not target_strikes:
                 continue
-            quote = snap.get("latestQuote") or {}
-            bid, ask = quote.get("bp"), quote.get("ap")
-            if not bid or not ask or bid <= 0 or ask <= 0:
-                errors.append(f"{contract_symbol}: no usable bid/ask in snapshot")
+            try:
+                snapshots = client.get_option_snapshots(
+                    symbol, feed=config.OPTION_QUOTE_FEED, expiration_date=chosen_exp,
+                    strike_gte=min(target_strikes), strike_lte=max(target_strikes),
+                )
+            except AlpacaError as e:
+                errors.append(f"{symbol} {chosen_exp}: snapshot fetch failed: {e}")
                 continue
-            mid = (bid + ask) / 2.0
-            is_call = c["type"] == "call"
-            strike = float(c["strike_price"])
 
-            iv_result = implied_vol(
-                market_price=mid, S=spot, K=strike, T=T_years,
-                r=config.RISK_FREE_RATE, q=config.DIVIDEND_YIELD_ASSUMPTION, is_call=is_call,
-            )
-            rows.append(
-                {
-                    "snapshot_date": today.isoformat(),
-                    "underlying": symbol,
-                    "contract_symbol": contract_symbol,
-                    "expiration_date": nearest_exp,
-                    "dte": dte,
-                    "strike": strike,
-                    "type": c["type"],
-                    "underlying_price": spot,
-                    "bid": bid,
-                    "ask": ask,
-                    "mid": mid,
-                    "spread_pct_of_mid": (ask - bid) / mid if mid else None,
-                    "approx_iv": iv_result.iv,
-                    "iv_converged": iv_result.converged,
-                    "iv_reason": iv_result.reason,
-                    "iv_is_approximate": config.IV_IS_APPROXIMATE,
-                    "quote_feed": config.OPTION_QUOTE_FEED,
-                }
-            )
+            contract_by_sym = {c["symbol"]: c for c in exp_contracts}
+            dte = (datetime.strptime(chosen_exp, "%Y-%m-%d").date() - today).days
+            T_years = max(dte, 0) / 365.0
+            for contract_symbol, snap in snapshots.items():
+                c = contract_by_sym.get(contract_symbol)
+                if c is None or float(c["strike_price"]) not in target_strikes:
+                    continue
+                quote = snap.get("latestQuote") or {}
+                bid, ask = quote.get("bp"), quote.get("ap")
+                if not bid or not ask or bid <= 0 or ask <= 0:
+                    errors.append(f"{contract_symbol}: no usable bid/ask in snapshot")
+                    continue
+                mid = (bid + ask) / 2.0
+                is_call = c["type"] == "call"
+                strike = float(c["strike_price"])
+                iv_result = implied_vol(
+                    market_price=mid, S=spot, K=strike, T=T_years,
+                    r=config.RISK_FREE_RATE, q=config.DIVIDEND_YIELD_ASSUMPTION, is_call=is_call,
+                )
+                rows.append(
+                    {
+                        "snapshot_date": today.isoformat(),
+                        "underlying": symbol,
+                        "contract_symbol": contract_symbol,
+                        "expiration_date": chosen_exp,
+                        "dte": dte,
+                        "strike": strike,
+                        "type": c["type"],
+                        "underlying_price": spot,
+                        "bid": bid,
+                        "ask": ask,
+                        "mid": mid,
+                        "spread_pct_of_mid": (ask - bid) / mid if mid else None,
+                        "approx_iv": iv_result.iv,
+                        "iv_converged": iv_result.converged,
+                        "iv_reason": iv_result.reason,
+                        "iv_is_approximate": config.IV_IS_APPROXIMATE,
+                        "quote_feed": config.OPTION_QUOTE_FEED,
+                    }
+                )
     return rows, errors
 
 
 def collect_earnings(finnhub: FinnhubClient, symbols: set[str]) -> tuple[list[dict], list[str]]:
+    """Pull earnings from EARNINGS_DAYS_BACK behind today to SNAPSHOT_MAX_DTE
+    ahead. On the first run (no history older than 60 days on file) it seeds
+    EARNINGS_SEED_DAYS_BACK of past announcements so the drift sleeve's
+    cross-sectional pool isn't empty on day one."""
+    today = datetime.now(timezone.utc).date()
+    days_back = config.EARNINGS_DAYS_BACK
     try:
-        raw_rows = finnhub.get_earnings_calendar(days_ahead=config.SNAPSHOT_MAX_DTE + 5, symbols=symbols)
+        existing = pd.read_csv(config.EARNINGS_FILE)
+        oldest = pd.to_datetime(existing["earnings_date"]).min().date()
+        if (today - oldest).days < 60:
+            days_back = config.EARNINGS_SEED_DAYS_BACK
+    except (FileNotFoundError, KeyError, ValueError):
+        days_back = config.EARNINGS_SEED_DAYS_BACK
+    try:
+        raw_rows = finnhub.get_earnings_range(
+            today - timedelta(days=days_back), today + timedelta(days=config.SNAPSHOT_MAX_DTE), symbols=symbols
+        )
     except FinnhubError as e:
         return [], [f"earnings calendar fetch failed: {e}"]
     rows = [
@@ -289,6 +304,21 @@ def collect_earnings(finnhub: FinnhubClient, symbols: set[str]) -> tuple[list[di
         for r in raw_rows
     ]
     return rows, []
+
+
+def collect_vix() -> tuple[int, list[str]]:
+    """Full VIX/VIX3M history, overwritten each run (it's the publisher's full file)."""
+    try:
+        df, source = fetch_vix_term()
+    except RuntimeError as e:
+        return 0, [str(e)]
+    out = df.reset_index()
+    out.columns = ["date", "vix", "vix3m"]
+    out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+    out["source"] = source
+    out.to_csv(config.VIX_TERM_FILE, index=False)
+    log(f"  -> VIX term structure: {len(out)} rows through {out['date'].iloc[-1]} (source: {source})")
+    return len(out), []
 
 
 def main() -> int:
@@ -362,6 +392,15 @@ def main() -> int:
         all_errors.append(f"deep bar backfill failed entirely: {e}")
         deep_bars = {}
 
+    # SPY needs a longer history than everything else: the panic label uses
+    # the trailing 24-month (504 trading day) market return.
+    try:
+        spy_long = alpaca.get_daily_bars(["SPY"], lookback_days=config.SPY_HISTORY_LOOKBACK_DAYS, feed=config.STOCK_BARS_FEED)
+        if spy_long.get("SPY"):
+            deep_bars["SPY"] = spy_long["SPY"]
+    except AlpacaError as e:
+        all_errors.append(f"SPY long-history pull failed: {e}")
+
     bar_rows = []
     for symbol, bars in deep_bars.items():
         for b in bars:
@@ -386,12 +425,19 @@ def main() -> int:
             .assign(_pri=1),
         ]
     ).sort_values("_pri")
-    priority_symbols = priority["symbol"].head(config.IV_SNAPSHOT_DAILY_CAP).tolist()
+    # SPY always first: the index-volatility sleeve needs its option quotes daily.
+    priority_symbols = ["SPY"] + [x for x in priority["symbol"].tolist() if x != "SPY"]
+    priority_symbols = priority_symbols[: config.IV_SNAPSHOT_DAILY_CAP]
     log(f"Sampling approximate IV for {len(priority_symbols)} priority symbols (cap={config.IV_SNAPSHOT_DAILY_CAP})...")
     iv_rows, iv_errors = collect_iv_snapshots(alpaca, priority_symbols)
     all_errors += iv_errors
     iv_total = merge_csv(config.IV_SNAPSHOTS_FILE, iv_rows, subset_keys=["snapshot_date", "contract_symbol"])
     log(f"  -> {len(iv_rows)} snapshot rows this run, {iv_total} total in file, {len(iv_errors)} errors")
+
+    # ---- Step 6a: VIX / VIX3M term structure ----
+    log("Collecting VIX term structure (Cboe, FRED backup)...")
+    _, vix_errors = collect_vix()
+    all_errors += vix_errors
 
     # ---- Step 6: earnings calendar for the current eligible pool ----
     eligible_symbols = set(metrics[metrics["is_liquidity_eligible"]]["symbol"])
