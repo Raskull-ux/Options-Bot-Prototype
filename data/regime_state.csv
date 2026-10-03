@@ -1,0 +1,2 @@
+date,spy_return_24m,bear_24m,market_var_percentile,panic_state,illiquidity_percentile,illiquidity_high,dispersion_percentile,dispersion_high,vix,vix3m,vix_slope,vix_inverted,vix_10y_median,vix_above_median,vix_date
+2026-10-02,0.3467723590039722,False,0.3424657534246575,False,0.03968253968253968,False,0.38095238095238093,False,15.31,18.01,2.700000000000001,False,16.92,False,2026-10-02
