@@ -26,6 +26,7 @@ import config
 from lib.signals import variance_ratio, trend_strength, percentile_rank_of_latest, average_true_range
 from lib.symbol_filter import load_excluded_symbols
 from lib import sleeves
+from lib.earnings_data import load_earnings
 
 
 def log(msg: str) -> None:
@@ -151,10 +152,8 @@ def main() -> int:
 
     sector_map = load_sector_map()
     vix = load_vix()
-    try:
-        earnings = pd.read_csv(config.EARNINGS_FILE)
-    except FileNotFoundError:
-        earnings = pd.DataFrame(columns=["symbol", "earnings_date", "hour"])
+    earnings = load_earnings()
+    log(f"  -> earnings events loaded: {earnings['source'].value_counts().to_dict() if not earnings.empty else 0}")
     try:
         iv_df = pd.read_csv(config.IV_SNAPSHOTS_FILE)
     except FileNotFoundError:
@@ -192,10 +191,12 @@ def main() -> int:
         log(f"  -> {n_conf} symbol(s) got opposite-direction signals today; flagged conflict=True, not to be traded")
     cols = sleeves.SIGNAL_COLUMNS + list(regime_cols.keys())
     replace_date_rows(config.SIGNALS_FILE, "date", date_str, signals, columns=cols)
-    log(f"  -> {len(signals)} signals fired for entry on {sleeves.next_session(today).date()}")
+    log(f"  -> {len(signals)} signals fired for entry on {sleeves.next_session(today).date()}, "
+        f"{sum(1 for x in signals if x['alert'])} to alert")
     for s in signals:
         log(f"     {s['sleeve']:20s} {s['symbol']:6s} {s['direction']:16s} {s['structure']}"
-            + ("   [CONFLICT - skip]" if s.get("conflict") else ""))
+            + ("   [CONFLICT - skip]" if s.get("conflict") else "")
+            + ("   [shadow - logged, not alerted]" if s["sleeve"] in config.SHADOW_SLEEVES and not s.get("conflict") else ""))
     log("Done.")
     return 0
 
