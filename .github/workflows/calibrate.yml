@@ -1,0 +1,30 @@
+name: Calibrate Option Estimate
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas numpy requests scipy
+      - name: Calibrate against cached Databento option bars (no Databento spend)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: python calibrate_options.py
+      - name: Save results
+        if: always()
+        run: |
+          [ -d results/calibration ] || exit 0
+          git config user.name "backtest-bot"
+          git config user.email "backtest-bot@users.noreply.github.com"
+          git add results/calibration/
+          git diff --cached --quiet || git commit -m "Option calibration $(date -u +%F)"
+          git pull --rebase || true
+          git push
