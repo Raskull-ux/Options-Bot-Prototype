@@ -184,6 +184,45 @@ def needs_by_day(trades: list[dict]) -> dict[date, set]:
     return need
 
 
+def resolve_day(dbc, syms: set, d: date) -> tuple[set, list]:
+    """Free Databento symbology check: which raw symbols exist on day d."""
+    r = dbc.symbology.resolve(dataset=DATASET, symbols=sorted(syms), stype_in="raw_symbol",
+                              stype_out="instrument_id", start_date=d.isoformat(),
+                              end_date=(d + timedelta(days=1)).isoformat())
+    nf = list(r.get("not_found", []) or [])
+    return set(syms) - set(nf), nf
+
+
+def diagnose(dbc, trades: list[dict], need: dict) -> None:
+    """Show exactly why symbols fail to resolve, using only free endpoints
+    (plus at most a few cents for one day of SPY contract definitions)."""
+    days = sorted(need)
+    probe = days[:2] + days[len(days) // 2: len(days) // 2 + 1] + days[-2:]
+    for d in probe:
+        syms = sorted(need[d])[:6]
+        ok, nf = resolve_day(dbc, set(syms), d)
+        log(f"[diag] {d}: {len(ok)}/{len(syms)} resolve as raw_symbol. tried: {syms[:2]} ... not_found: {nf[:3]}")
+        alt = [x.replace(" ", "") for x in syms]  # unpadded variant
+        ok2, _ = resolve_day(dbc, set(alt), d)
+        log(f"[diag] {d}: unpadded format resolves {len(ok2)}/{len(alt)} (e.g. {alt[0]})")
+    d = probe[len(probe) // 2]
+    s0, _ = window_utc(d)
+    end = (datetime.fromisoformat(s0) + timedelta(minutes=1)).isoformat()
+    try:
+        c = dbc.metadata.get_cost(dataset=DATASET, symbols=["SPY.OPT"], schema="definition", stype_in="parent", start=s0, end=end)
+        log(f"[diag] one minute of SPY option definitions on {d} would cost ${c:.4f}")
+        if c <= 0.25:
+            df = dbc.timeseries.get_range(dataset=DATASET, symbols=["SPY.OPT"], schema="definition",
+                                          stype_in="parent", start=s0, end=end).to_df()
+            if not df.empty:
+                cols = [x for x in ("raw_symbol", "symbol", "expiration", "strike_price", "instrument_class") if x in df.columns]
+                log(f"[diag] {len(df)} SPY contracts defined; real symbol samples:\n{df[cols].head(8).to_string()}")
+            else:
+                log("[diag] no definition records in that minute (definitions may only publish at the session start)")
+    except Exception as ex:
+        log(f"[diag] definition probe failed: {type(ex).__name__}: {str(ex)[:200]}")
+
+
 def window_utc(d: date) -> tuple[str, str]:
     s = datetime(d.year, d.month, d.day, QUOTE_TIME[0], QUOTE_TIME[1] - WINDOW_MIN, tzinfo=ET).astimezone(timezone.utc)
     e = datetime(d.year, d.month, d.day, QUOTE_TIME[0], QUOTE_TIME[1] + 1, tzinfo=ET).astimezone(timezone.utc)
@@ -219,12 +258,38 @@ def main(mode: str, budget: float) -> int:
         log(f"cache: {len(have)} symbol-days already downloaded")
     log(f"to fetch: {sum(len(v) for v in need.values())} symbol-days across {len(need)} days")
 
-    total, per_year = 0.0, {}
+    if mode == "diagnose":
+        diagnose(dbc, trades, need)
+        return 0
+
+    total, per_year, unresolved, bad_days, valid = 0.0, {}, 0, [], {}
     for d, ss in sorted(need.items()):
+        try:
+            ok, nf = resolve_day(dbc, ss, d)
+        except Exception as ex:
+            bad_days.append(f"{d}: resolve {type(ex).__name__}: {str(ex)[:100]}")
+            continue
+        unresolved += len(nf)
+        if not ok:
+            bad_days.append(f"{d}: none of {len(ss)} symbols exist (e.g. {sorted(ss)[0]!r})")
+            continue
+        valid[d] = ok
         s, e = window_utc(d)
-        c = dbc.metadata.get_cost(dataset=DATASET, symbols=sorted(ss), schema=SCHEMA, stype_in="raw_symbol", start=s, end=e)
+        try:
+            c = dbc.metadata.get_cost(dataset=DATASET, symbols=sorted(ok), schema=SCHEMA, stype_in="raw_symbol", start=s, end=e)
+        except Exception as ex:
+            bad_days.append(f"{d}: cost {type(ex).__name__}: {str(ex)[:100]}")
+            continue
         total += c
         per_year[d.year] = per_year.get(d.year, 0) + c
+    resolved = sum(len(v) for v in valid.values())
+    log(f"symbol check: {resolved} symbol-days resolve, {unresolved} do not; {len(bad_days)} days with no usable symbols")
+    for x in bad_days[:8]:
+        log(f"  - {x}")
+    if resolved == 0:
+        log("FATAL: no symbols resolved on any day -- run mode 'diagnose' to see the real symbol format")
+        return 1
+    need = valid
     log(f"DATABENTO COST ESTIMATE: ${total:.2f}  by year: { {y: round(v, 2) for y, v in per_year.items()} }  (budget ${budget:.2f})")
     if mode == "estimate":
         log("estimate mode: nothing downloaded, nothing spent")
