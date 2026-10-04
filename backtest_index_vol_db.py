@@ -1,3 +1,4 @@
+"""
 SPY straddle backtest v2 -- priced from QUOTES, not trade prints.
 
 Fixes over v1 (which lost 491 of 648 days to legs with no recorded trade):
