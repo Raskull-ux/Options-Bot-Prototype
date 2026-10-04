@@ -169,6 +169,21 @@ SIGNALS_FILE = f"{DATA_DIR}/signals.csv"          # fired sleeve signals (what a
 VIX_TERM_FILE = f"{DATA_DIR}/vix_term.csv"
 EARNINGS_DAYS_BACK = 10           # daily pull window behind today (drift sleeve needs recent past)
 EARNINGS_SEED_DAYS_BACK = 120     # one-time backfill so the drift pool isn't empty on day one
+EDGAR_EARNINGS_FILE = f"{DATA_DIR}/edgar_earnings.csv"   # SEC 8-K Item 2.02 history (build_edgar_earnings.py)
+EDGAR_SINCE = "2024-01-01"        # Alpaca's option history reaches back to about here
+
+# Sleeves that keep running and logging but are NOT sent as alerts.
+# volume_reversal: 286-trade replay (Jul-Oct 2026) hit 49.7%, +0.07% avg,
+# t=0.38; no slice above t=0.87. Logged silently in case that changes.
+SHADOW_SLEEVES = {"volume_reversal"}
+
+# --- Earnings-sleeve option backtest (backtest_earnings.py) ---
+BT_START = "2024-03-01"
+BT_STOCK_LOOKBACK_DAYS = 700      # trading-day-ish lookback for the stock panel (covers BT_START + history)
+BT_MIN_DAYS_AFTER_EXIT = {"earnings_reversal": 5, "post_earnings_drift": 7}  # [eng] don't hold into expiry week
+BT_STRIKE_BAND = 0.10             # search strikes within +/-10% of spot, pick nearest to spot
+BT_COST_LEVELS = [0.0, 0.05, 0.10, 0.20]  # round-trip cost as a fraction of premium (Pardo: stress at double)
+BT_REQUEST_INTERVAL = 0.32        # seconds between Alpaca calls (~187/min, under the 200/min free limit)
 
 # ---------------------------------------------------------------------------
 # Signal engine (Phase 2)
