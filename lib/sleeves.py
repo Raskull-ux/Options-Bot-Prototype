@@ -22,7 +22,7 @@ from lib.signals import amihud_illiquidity, cross_sectional_dispersion, percenti
 
 SIGNAL_COLUMNS = [
     "date", "entry_session", "sleeve", "symbol", "direction", "structure",
-    "hold_days", "exit_rule", "evidence", "deviations", "inputs", "conflict",
+    "hold_days", "exit_rule", "evidence", "deviations", "inputs", "conflict", "alert",
 ]
 
 
@@ -38,6 +38,8 @@ def mark_conflicts(signals: list[dict]) -> int:
     clashing = {sym for sym, d in dirs.items() if len(d) > 1}
     for s in signals:
         s["conflict"] = s["symbol"] in clashing and s["direction"] in ("bullish", "bearish")
+        # alert = goes to Discord. Conflicts never alert; shadow sleeves only log.
+        s["alert"] = (not s["conflict"]) and s["sleeve"] not in config.SHADOW_SLEEVES
     return len(clashing)
 
 BULL_STRUCT = "long_call_or_call_debit_spread"
