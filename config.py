@@ -175,7 +175,11 @@ EDGAR_SINCE = "2024-01-01"        # Alpaca's option history reaches back to abou
 # Sleeves that keep running and logging but are NOT sent as alerts.
 # volume_reversal: 286-trade replay (Jul-Oct 2026) hit 49.7%, +0.07% avg,
 # t=0.38; no slice above t=0.87. Logged silently in case that changes.
-SHADOW_SLEEVES = {"volume_reversal"}
+# earnings_reversal: option backtest (123 priced trades, 2024-2026) lost in every
+# year, direction and report timing: -16.1% avg gross, t(log)=-6.33; -24.1% at
+# 10% costs, t=-7.32. Stock moved WITH the pre-earnings run (fade lost -2.6%,
+# t=-2.74) and IV crush hit every position held through the report.
+SHADOW_SLEEVES = {"volume_reversal", "earnings_reversal"}
 
 # --- Earnings-sleeve option backtest (backtest_earnings.py) ---
 BT_START = "2024-03-01"
