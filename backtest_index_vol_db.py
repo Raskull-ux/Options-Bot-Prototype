@@ -1,34 +1,33 @@
-"""
-SPY straddle backtest v2 -- priced from QUOTES, not trade prints.
+# SPY straddle backtest v2 -- priced from QUOTES, not trade prints.
+#
+# Fixes over v1 (which lost 491 of 648 days to legs with no recorded trade):
+#   1. Each leg is priced from Databento OPRA.PILLAR cbbo-1m (consolidated
+#      best bid/offer, 1-minute). Price = the last quote at or before 15:45 ET,
+#      no older than 15 minutes, with bid > 0 and ask >= bid. If the ATM strike
+#      has no valid quote on either day, the nearest strike (+/-1) is used.
+#   2. Costs are each leg's ACTUAL spread: buy both legs at the ask on entry,
+#      sell both at the bid on exit. A flat 1% round-trip case is kept as a
+#      sanity check, alongside gross (mid to mid).
+#   3. History starts 2023-03-28 (start of Databento OPRA coverage).
+#
+# Contract rule [eng, disclosed]: standard monthly SPY expiration (3rd Friday;
+# moved to the prior trading day when the exchange is closed), the first one at
+# least 30 calendar days after entry. Strike = nearest $1 to SPY at 15:45 ET on
+# the entry day (Alpaca 1-minute SIP bar).
+#
+# Timing: the VIX curve is labelled at day t's close; the straddle is bought at
+# 15:45 ET on t+1 and sold at 15:45 ET on t+2 (next-day test), or held until the
+# curve returns to contango (episode test). This is one session later than
+# Johnson's close-to-close returns, because the bot can't trade the close it
+# labels on.
+#
+# Cost safety: `estimate` mode only prices the query with Databento's free cost
+# endpoint. `run` mode re-estimates and aborts if the total exceeds --budget.
+# Downloaded quotes are cached (data/db_spy_quotes.csv.gz) so reruns are free.
+#
+# Usage:  python backtest_index_vol_db.py estimate
+#         python backtest_index_vol_db.py run 15
 
-Fixes over v1 (which lost 491 of 648 days to legs with no recorded trade):
-  1. Each leg is priced from Databento OPRA.PILLAR cbbo-1m (consolidated
-     best bid/offer, 1-minute). Price = the last quote at or before 15:45 ET,
-     no older than 15 minutes, with bid > 0 and ask >= bid. If the ATM strike
-     has no valid quote on either day, the nearest strike (+/-1) is used.
-  2. Costs are each leg's ACTUAL spread: buy both legs at the ask on entry,
-     sell both at the bid on exit. A flat 1% round-trip case is kept as a
-     sanity check, alongside gross (mid to mid).
-  3. History starts 2023-03-28 (start of Databento OPRA coverage).
-
-Contract rule [eng, disclosed]: standard monthly SPY expiration (3rd Friday;
-moved to the prior trading day when the exchange is closed), the first one at
-least 30 calendar days after entry. Strike = nearest $1 to SPY at 15:45 ET on
-the entry day (Alpaca 1-minute SIP bar).
-
-Timing: the VIX curve is labelled at day t's close; the straddle is bought at
-15:45 ET on t+1 and sold at 15:45 ET on t+2 (next-day test), or held until the
-curve returns to contango (episode test). This is one session later than
-Johnson's close-to-close returns, because the bot can't trade the close it
-labels on.
-
-Cost safety: `estimate` mode only prices the query with Databento's free cost
-endpoint. `run` mode re-estimates and aborts if the total exceeds --budget.
-Downloaded quotes are cached (data/db_spy_quotes.csv.gz) so reruns are free.
-
-Usage:  python backtest_index_vol_db.py estimate
-        python backtest_index_vol_db.py run 15
-"""
 import math
 import os
 import sys
