@@ -1,0 +1,36 @@
+name: Backtest earnings sleeves
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_signals:
+        description: "Cap on signals to price (0 = all; try 200 first for a quick check)"
+        required: true
+        default: "200"
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run backtest
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python backtest_earnings.py ${{ github.event.inputs.max_signals }}
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/backtest_earnings_trades.csv || true
+          if git diff --cached --quiet; then echo "No changes."; else
+            git commit -m "Earnings backtest: $(date -u +%Y-%m-%d)"; git pull --rebase --autostash; git push; fi
