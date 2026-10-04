@@ -23,6 +23,7 @@ import config
 from lib import sleeves
 from lib.symbol_filter import load_excluded_symbols
 import signal_engine as se
+from lib.earnings_data import load_earnings
 
 
 def outcome(sig: dict, p: dict) -> dict:
@@ -67,10 +68,7 @@ def main(n_days: int) -> int:
     uni = set(universe)
     sector_map = se.load_sector_map()
     vix = se.load_vix()
-    try:
-        earnings = pd.read_csv(config.EARNINGS_FILE)
-    except FileNotFoundError:
-        earnings = pd.DataFrame(columns=["symbol", "earnings_date", "hour"])
+    earnings = load_earnings()
 
     days = close.index[-n_days:]
     print(f"Replaying {len(days)} trading days: {days[0].date()} to {days[-1].date()}, universe {len(uni)}\n")
@@ -105,7 +103,7 @@ def main(n_days: int) -> int:
             else:
                 perf = o["status"]
             print(f"   -> {s['sleeve']:20s} {s['symbol']:6s} {s['direction']:15s} "
-                  f"{'[CONFLICT-skip] ' if s['conflict'] else ''}{perf} [{o.get('status')}]")
+                  f"{'[CONFLICT-skip] ' if s['conflict'] else ''}{'[shadow] ' if s['sleeve'] in config.SHADOW_SLEEVES else ''}{perf} [{o.get('status')}]")
         print()
 
     df = pd.DataFrame(all_rows)
