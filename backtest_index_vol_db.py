@@ -201,9 +201,7 @@ def diagnose(dbc, trades: list[dict], need: dict) -> None:
         syms = sorted(need[d])[:6]
         ok, nf = resolve_day(dbc, set(syms), d)
         log(f"[diag] {d}: {len(ok)}/{len(syms)} resolve as raw_symbol. tried: {syms[:2]} ... not_found: {nf[:3]}")
-        alt = [x.replace(" ", "") for x in syms]  # unpadded variant
-        ok2, _ = resolve_day(dbc, set(alt), d)
-        log(f"[diag] {d}: unpadded format resolves {len(ok2)}/{len(alt)} (e.g. {alt[0]})")
+
     d = probe[len(probe) // 2]
     s0, _ = window_utc(d)
     end = (datetime.fromisoformat(s0) + timedelta(minutes=1)).isoformat()
