@@ -259,63 +259,101 @@ def main(mode: str, budget: float) -> int:
         diagnose(dbc, trades, need)
         return 0
 
-    total, per_year, unresolved, bad_days, valid = 0.0, {}, 0, [], {}
-    for d, ss in sorted(need.items()):
-        try:
-            ok, nf = resolve_day(dbc, ss, d)
-        except Exception as ex:
-            bad_days.append(f"{d}: resolve {type(ex).__name__}: {str(ex)[:100]}")
-            continue
-        unresolved += len(nf)
-        if not ok:
-            bad_days.append(f"{d}: none of {len(ss)} symbols exist (e.g. {sorted(ss)[0]!r})")
-            continue
-        valid[d] = ok
-        s, e = window_utc(d)
-        try:
-            c = dbc.metadata.get_cost(dataset=DATASET, symbols=sorted(ok), schema=SCHEMA, stype_in="raw_symbol", start=s, end=e)
-        except Exception as ex:
-            bad_days.append(f"{d}: cost {type(ex).__name__}: {str(ex)[:100]}")
-            continue
-        total += c
-        per_year[d.year] = per_year.get(d.year, 0) + c
-    resolved = sum(len(v) for v in valid.values())
-    log(f"symbol check: {resolved} symbol-days resolve, {unresolved} do not; {len(bad_days)} days with no usable symbols")
-    for x in bad_days[:8]:
-        log(f"  - {x}")
-    if resolved == 0:
-        log("FATAL: no symbols resolved on any day -- run mode 'diagnose' to see the real symbol format")
-        return 1
-    need = valid
-    log(f"DATABENTO COST ESTIMATE: ${total:.2f}  by year: { {y: round(v, 2) for y, v in per_year.items()} }  (budget ${budget:.2f})")
+    def retry(fn):
+        """Retry transient Databento/server errors (the 504 gateway timeouts seen
+        2026-10-05) with backoff; re-raise anything else immediately."""
+        for attempt in range(4):
+            try:
+                return fn()
+            except Exception as ex:
+                transient = ("Server" in type(ex).__name__ or any(
+                    k in str(ex) for k in ("504", "502", "503", "timed out", "Timeout", "Connection")))
+                if not transient or attempt == 3:
+                    raise
+                time.sleep((5, 15, 30)[attempt])
+
     if mode == "estimate":
+        total, per_year, unresolved, bad_days, valid = 0.0, {}, 0, [], {}
+        for i, (d, ss) in enumerate(sorted(need.items())):
+            if (i + 1) % 50 == 0:
+                log(f"  estimate: {i + 1}/{len(need)} days checked, running cost ${total:.4f}")
+            try:
+                ok, nf = retry(lambda: resolve_day(dbc, ss, d))
+            except Exception as ex:
+                bad_days.append(f"{d}: resolve {type(ex).__name__}: {str(ex)[:100]}")
+                continue
+            unresolved += len(nf)
+            if not ok:
+                bad_days.append(f"{d}: none of {len(ss)} symbols exist (e.g. {sorted(ss)[0]!r})")
+                continue
+            valid[d] = ok
+            s, e = window_utc(d)
+            try:
+                c = retry(lambda: dbc.metadata.get_cost(dataset=DATASET, symbols=sorted(ok), schema=SCHEMA,
+                                                         stype_in="raw_symbol", start=s, end=e))
+            except Exception as ex:
+                bad_days.append(f"{d}: cost {type(ex).__name__}: {str(ex)[:100]}")
+                continue
+            total += c
+            per_year[d.year] = per_year.get(d.year, 0) + c
+        resolved = sum(len(v) for v in valid.values())
+        log(f"symbol check: {resolved} symbol-days resolve, {unresolved} do not; {len(bad_days)} days with no usable symbols")
+        for x in bad_days[:8]:
+            log(f"  - {x}")
+        log(f"DATABENTO COST ESTIMATE: ${total:.2f}  by year: { {y: round(v, 2) for y, v in per_year.items()} }  (budget ${budget:.2f})")
         log("estimate mode: nothing downloaded, nothing spent")
         return 0
-    if total > budget:
-        log(f"ABORT: estimate ${total:.2f} exceeds budget ${budget:.2f}; nothing downloaded")
+
+    # run mode: quick cost check on ~20 days spread over the period, projected
+    # to the full set (the full estimate takes ~2h and came to $0.02).
+    days_sorted = sorted(need)
+    sample = days_sorted[:: max(1, len(days_sorted) // 20)][:20]
+    sample_cost, n_ok = 0.0, 0
+    for d in sample:
+        s, e = window_utc(d)
+        try:
+            ok, _ = retry(lambda: resolve_day(dbc, need[d], d))
+            if not ok:
+                continue
+            sample_cost += retry(lambda: dbc.metadata.get_cost(dataset=DATASET, symbols=sorted(ok), schema=SCHEMA,
+                                                               stype_in="raw_symbol", start=s, end=e))
+            n_ok += 1
+        except Exception as ex:
+            log(f"  cost-check skip {d}: {type(ex).__name__}: {str(ex)[:80]}")
+    if n_ok == 0:
+        log("ABORT: could not price any sample day; nothing downloaded")
+        return 1
+    projected = sample_cost / n_ok * len(need)
+    log(f"run-mode cost check: {n_ok} sample days cost ${sample_cost:.4f} -> projected ${projected:.2f} "
+        f"for {len(need)} days (budget ${budget:.2f})")
+    if projected > budget:
+        log(f"ABORT: projected ${projected:.2f} exceeds budget ${budget:.2f}; nothing downloaded")
         return 1
 
-    new_rows, errors = [], []
+    new_rows, errors, no_symbols = [], [], 0
     for i, (d, ss) in enumerate(sorted(need.items())):
         s, e = window_utc(d)
         try:
-            df = dbc.timeseries.get_range(dataset=DATASET, symbols=sorted(ss), schema=SCHEMA,
-                                          stype_in="raw_symbol", start=s, end=e).to_df()
+            df = retry(lambda: dbc.timeseries.get_range(dataset=DATASET, symbols=sorted(ss), schema=SCHEMA,
+                                                        stype_in="raw_symbol", start=s, end=e).to_df())
         except Exception as ex:
-            errors.append(f"{d}: {type(ex).__name__}: {str(ex)[:120]}")
+            if "could be resolved" in str(ex) or "symbology" in str(ex):
+                no_symbols += 1  # none of that day's contracts exist; nothing to price
+            else:
+                errors.append(f"{d}: {type(ex).__name__}: {str(ex)[:120]}")
             continue
+        if (i + 1) % 50 == 0:
+            log(f"  fetched {i + 1}/{len(need)} days ({len(errors)} errors so far)")
         if df.empty:
             continue
         df = df.reset_index()
         tcol = "ts_recv" if "ts_recv" in df.columns else df.columns[0]
         new_rows.append(pd.DataFrame({"day": d.isoformat(), "symbol": df["symbol"], "ts": df[tcol],
                                       "bid_px_00": df["bid_px_00"], "ask_px_00": df["ask_px_00"]}))
-        if (i + 1) % 100 == 0:
-            log(f"  fetched {i + 1}/{len(need)} days")
     allq = pd.concat([cached] + new_rows, ignore_index=True) if new_rows else cached
     if not allq.empty:
         allq.to_csv(CACHE, index=False, compression="gzip")
-    log(f"quotes: {len(allq)} rows cached; {len(errors)} fetch errors")
+    log(f"quotes: {len(allq)} rows cached; {len(errors)} fetch errors; {no_symbols} days had no listed contracts")
     for x in errors[:10]:
         log(f"  - {x}")
 
