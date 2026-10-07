@@ -305,3 +305,5 @@ WL_MAX_SPREAD = 0.10             # skip contracts whose bid/ask spread exceeds 1
 WL_MIN_PUT_SCORE = 4             # confirmations needed (out of 12) to be posted
 WL_STRETCH_ATR = 2.5             # "stretched": close this many average daily ranges above the 20 SMA
 WL_MIN_TARGET_STEP = 0.005       # each target at least 0.5% below the previous level
+WL_MAX_STRIKE_DIST = 0.025       # suggested put strike must be within 2.5% of the trigger
+WL_MIN_RR = 0.3                  # minimum (trigger - T1) / (invalid - trigger) to post a setup
