@@ -33,6 +33,14 @@ jobs:
       - name: Run signal engine
         run: python signal_engine.py
 
+      - name: Post market readout to Discord
+        continue-on-error: true   # a Discord hiccup must never block the data commit
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python daily_readout.py
+
       - name: Commit updated data files
         run: |
           git config user.name "options-bot"
