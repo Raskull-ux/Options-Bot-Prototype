@@ -84,7 +84,7 @@ def earnings_section(today: pd.Timestamp, bars: pd.DataFrame, top_n: int = 10) -
     recent = bars[bars["date"] > today - timedelta(days=35)]
     dollar_vol = (recent["close"] * recent["volume"]).groupby(recent["symbol"]).mean()
     e = e.assign(dv=e["symbol"].map(dollar_vol).fillna(0)).sort_values("dv", ascending=False)
-    names = [f"{r.symbol} {r.d:%a}{' ' + r.hour if isinstance(r.hour, str) and r.hour else ''}" for r in e.head(top_n).itertuples()]
+    names = [f"{r.symbol} {r.d:%a %m/%d}{' ' + r.hour if isinstance(r.hour, str) and r.hour else ''}" for r in e.head(top_n).itertuples()]
     return [f"**Earnings next 7 days:** {len(e)} reporting. Biggest: " + ", ".join(names)]
 
 
@@ -121,7 +121,7 @@ def build_message() -> str:
         lines.append(f"WARNING: data is {age} days old - the daily collector may have failed.")
     lines += spy_section(bars) + [""] + vix_section(r) + [""] + regime_section(r)
     er = earnings_section(today, bars)
-    fl = flags_section(signals, r["date"])
+    fl = []  # research/shadow sleeve lines removed from the public post
     if er:
         lines += [""] + er
     if fl:
