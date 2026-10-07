@@ -52,6 +52,15 @@ def metrics(df: pd.DataFrame, spy_close: pd.Series | None = None) -> dict | None
     }
     for n in SMA_PERIODS:
         m[f"sma{n}"] = float(c.iloc[-n:].mean())
+    sma20_s = c.rolling(20).mean()
+    ext = (c - sma20_s) / atr
+    m.update(
+        prev_low=float(lo.iloc[-2]), prior_hi20=float(h.iloc[-21:-1].max()),
+        rsi_max5=float(r.iloc[-5:].max()), rsi_max10=float(r.iloc[-10:].max()),
+        ext_atr_max5=float(ext.iloc[-5:].max()), pct_above_sma20=float(c.iloc[-1] / sma20_s.iloc[-1] - 1),
+        red=bool(c.iloc[-1] < c.iloc[-2]),
+    )
+    m.update(highs_compare(df, r, ml))
     if "open" in df.columns:
         m.update(gap_and_week_info(df))
     else:
@@ -244,3 +253,45 @@ def gap_and_week_info(df: pd.DataFrame) -> dict:
     failed_up = bool(o[-1] > prev_bh and o[-1] > prior_hi20 and c[-1] < o[-1] and c[-1] <= prev_bh)
     return {"gaps": d, "lw_close": float(w["close"].iloc[-1]) if len(w) else np.nan,
             "td": td_setup(df["close"]), "failed_gap_up": failed_up}
+
+
+# ---------------------------------------------------------------------------
+# Put-setup detection (Taz's daily put confirmations)
+# ---------------------------------------------------------------------------
+def highs_compare(df: pd.DataFrame, rsi_s: pd.Series, macd_s: pd.Series, recent: int = 5, prior: int = 30) -> dict:
+    """Compare the highest high of the last `recent` bars with the highest high
+    of the bars before that (back to `prior`).
+      higher high in price + lower RSI at that high  -> RSI bearish divergence
+      higher high in price + lower MACD at that high -> MACD bearish divergence
+      recent high below the prior high               -> lower high"""
+    h = df["high"]
+    rec, pri = h.iloc[-recent:], h.iloc[-prior:-recent]
+    ri, pi = rec.idxmax(), pri.idxmax()
+    hh = rec.max() > pri.max()
+    return {
+        "rsi_div": bool(hh and rsi_s[ri] < rsi_s[pi] - 1),
+        "macd_div": bool(hh and macd_s[ri] < macd_s[pi]),
+        "lower_high": bool(rec.max() < pri.max()),
+        "prior_high": float(pri.max()),
+    }
+
+
+def resistance_levels(m: dict) -> list[tuple[float, str]]:
+    """Levels that act as resistance from below (today's own high excluded)."""
+    lv = [(m["prior_hi20"], "20d high"), (m["lw_close"], "last wk close")]
+    lv += [(m[f"sma{n}"], f"{n} SMA") for n in (20, 50, 200)]
+    span = m["hi60"] - m["lo60"]
+    if span > 0:
+        lv += [(m["hi60"] - r * span, f"fib {str(r)[1:]}") for r in FIB_RATIOS]
+    for g in m.get("gaps", []):
+        if g["lo"] > m["close"]:  # an open gap overhead: its bottom edge is resistance
+            lv.append((g["lo"], f"{g['tf']} gap{' ⭐' if g['skipped'] else ''}"))
+    return [(p, lab) for p, lab in lv if p == p]
+
+
+def rejection(m: dict) -> tuple[float, str] | None:
+    """Today's high reached a resistance level (within 0.2%) but the close
+    finished below it. Returns the highest such level."""
+    hits = [(p, lab) for p, lab in resistance_levels(m)
+            if m["day_high"] >= p * 0.998 and m["close"] < p * 0.999]
+    return max(hits) if hits else None
