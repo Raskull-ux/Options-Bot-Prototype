@@ -58,6 +58,7 @@ def metrics(df: pd.DataFrame, spy_close: pd.Series | None = None) -> dict | None
         prev_low=float(lo.iloc[-2]), prior_hi20=float(h.iloc[-21:-1].max()),
         rsi_max5=float(r.iloc[-5:].max()), rsi_max10=float(r.iloc[-10:].max()),
         ext_atr_max5=float(ext.iloc[-5:].max()), pct_above_sma20=float(c.iloc[-1] / sma20_s.iloc[-1] - 1),
+        pct_above_sma20_max5=float((c / sma20_s - 1).iloc[-5:].max()),
         red=bool(c.iloc[-1] < c.iloc[-2]),
     )
     m.update(highs_compare(df, r, ml))
@@ -251,7 +252,7 @@ def gap_and_week_info(df: pd.DataFrame) -> dict:
     prev_bh = max(o[-2], c[-2])
     prior_hi20 = float(df["high"].iloc[-21:-1].max())
     failed_up = bool(o[-1] > prev_bh and o[-1] > prior_hi20 and c[-1] < o[-1] and c[-1] <= prev_bh)
-    return {"gaps": d, "lw_close": float(w["close"].iloc[-1]) if len(w) else np.nan,
+    return {"gaps": d, "lw_close": float(w["close"].iloc[-1]) if len(w) else np.nan, "prev_body_hi": float(prev_bh),
             "td": td_setup(df["close"]), "failed_gap_up": failed_up}
 
 
