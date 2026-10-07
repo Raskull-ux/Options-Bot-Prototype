@@ -1,0 +1,22 @@
+name: Pre-market post
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 13 * * 1-5"   # 9:15 AM ET in daylight time (8:15 AM ET in winter)
+
+jobs:
+  premarket:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Post pre-market levels
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python premarket.py
