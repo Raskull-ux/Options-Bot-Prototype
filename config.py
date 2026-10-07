@@ -179,7 +179,10 @@ EDGAR_SINCE = "2024-01-01"        # Alpaca's option history reaches back to abou
 # year, direction and report timing: -16.1% avg gross, t(log)=-6.33; -24.1% at
 # 10% costs, t=-7.32. Stock moved WITH the pre-earnings run (fade lost -2.6%,
 # t=-2.74) and IV crush hit every position held through the report.
-SHADOW_SLEEVES = {"volume_reversal", "earnings_reversal"}
+# post_earnings_drift: option backtest (1,115 priced trades, 2024-2026): stock
+# moved +0.4% in signal direction over the hold (no drift); options median
+# -47.5% gross, t(log)=-19.8; -52.5% median at 10% costs. Lost every year.
+SHADOW_SLEEVES = {"volume_reversal", "earnings_reversal", "post_earnings_drift"}
 
 # --- Earnings-sleeve option backtest (backtest_earnings.py) ---
 BT_START = "2024-03-01"
@@ -274,3 +277,26 @@ IV_RANK_MIN_HISTORY_DAYS = 60
 # Sector-profile cache: refreshed infrequently (industry classification
 # rarely changes), NOT re-fetched every daily run
 SECTOR_PROFILE_MAX_AGE_DAYS = 90
+
+# --- Discord readout ---
+# Who gets pinged: "@everyone", "@here" (only people online), a role like
+# "<@&ROLE_ID>", or "" for no ping.
+READOUT_MENTION = "@everyone"
+# When to ping: "always" (every readout) or "stress" (only when the VIX curve is
+# inverted or the panic state is on -- avoids training people to ignore it).
+READOUT_PING_WHEN = "always"
+
+# --- Daily watchlist (daily_watchlist.py) ---
+WATCHLIST_ENABLED = True
+CORE_WATCHLIST = ["SPY", "QQQ", "NVDA", "TSLA", "AMD", "META", "NFLX", "COIN", "INTC", "AAPL"]
+WL_TOP_N = 5                     # names per side
+WL_MIN_SCORE = 6                 # out of 9 checks to qualify for the ranked lists
+WL_MIN_PRICE = 20.0
+WL_MIN_DOLLAR_VOL = 100_000_000  # 20-day avg; keeps option markets tradeable
+WL_EXPIRY_MIN_DAYS = 7           # contract suggestion window (Taz: 1-2 weeks max)
+WL_EXPIRY_MAX_DAYS = 14
+WL_EARNINGS_WARN_DAYS = 5        # flag names reporting within this many calendar days
+WL_EXHAUSTION_N = 8
+WL_TRACK_SESSIONS = 5            # each idea is graded over the next 5 sessions
+WL_SCORECARD_WEEKDAY = 4         # Friday
+WL_IDEAS_FILE = f"{DATA_DIR}/watchlist_ideas.csv"
