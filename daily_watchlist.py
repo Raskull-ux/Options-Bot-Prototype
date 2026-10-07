@@ -77,6 +77,8 @@ def pick_contract(client, symbol: str, side: str, strike_near: float, today: dat
         if (ask - bid) / mid > config.WL_MAX_SPREAD:
             continue
         k = int(m["strike"]) / 1000
+        if abs(k / strike_near - 1) > config.WL_MAX_STRIKE_DIST:
+            continue
         cands.append((abs(k - strike_near), abs((exp - today).days - 10), exp, k, bid, ask))
     if not cands:
         return None, "too_wide"
@@ -255,7 +257,7 @@ def put_setup(m: dict) -> dict | None:
     vol_x = m["volume"] / m["vol20"] if m["vol20"] > 0 else 0
     checks = [
         (ex is not None, f"RSI {m['rsi_max5']:.0f} {ex['tier'] if ex else ''} (5d)".strip()),
-        (m["ext_atr_max5"] >= config.WL_STRETCH_ATR, f"stretched {m['pct_above_sma20']:+.0%} vs 20 SMA"),
+        (m["ext_atr_max5"] >= config.WL_STRETCH_ATR, f"stretched {m['pct_above_sma20_max5']:+.0%} over 20 SMA (5d peak)"),
         (m["rsi_div"], "RSI bear div"),
         (m["macd_div"], "MACD bear div"),
         (m["close"] < m["sma10"], "close < 10 SMA"),
@@ -270,10 +272,24 @@ def put_setup(m: dict) -> dict | None:
     hits = [lab for ok, lab in checks if ok]
     rolling = m["close"] < m["sma10"] or m["lower_high"] or m.get("failed_gap_up") or (rej is not None and m["red"])
     trigger = m["day_low"]
-    invalid = max(m["day_high"], rej[0]) if rej else m["day_high"]
+    if rej is not None:
+        invalid, inv_lab = rej[0], rej[1]                       # reclaiming the rejected level kills it
+    elif m.get("failed_gap_up"):
+        invalid, inv_lab = m["prev_body_hi"], "back above the gap"
+    else:
+        invalid, inv_lab = m["day_high"], "day high"
+    targets = put_targets(m, trigger)
+    rr = (trigger - targets[0][0]) / (invalid - trigger) if targets and invalid > trigger else np.nan
     return {"door": door, "score": len(hits), "hits": hits, "stage": "Rolling over" if rolling else "At the top — not broken yet",
-            "trigger": trigger, "invalid": invalid, "targets": put_targets(m, trigger),
+            "trigger": trigger, "invalid": invalid, "inv_lab": inv_lab, "targets": targets, "rr": rr,
             "td_buy9": td_side == "buy" and td_n >= 9, "rej": rej}
+
+
+def put_lw_txt(m: dict) -> str:
+    lw = m.get("lw_close", np.nan)
+    if lw != lw:
+        return ""
+    return f"Last wk close {fmt(lw)} overhead (resistance)" if lw > m["close"] else f"Last wk close {fmt(lw)} below (target)"
 
 
 def put_block(sym: str, m: dict, st: dict, contract: str | None, earn: str | None) -> str:
@@ -281,9 +297,10 @@ def put_block(sym: str, m: dict, st: dict, contract: str | None, earn: str | Non
     tgt = ", ".join(f"T{i + 1} {fmt(p)} ({lab})" for i, (p, lab) in enumerate(t)) or "no clean level below — trail it"
     lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) — **{st['stage']}** · {st['score']}/12 · {ta.td_text(m['td'])}",
              " · ".join(st["hits"]),
-             gap_txt(m, 2, below_only=True) + (f" | {lw_txt(m)}" if lw_txt(m) else ""),
+             gap_txt(m, 2, below_only=True) + (f" | {put_lw_txt(m)}" if put_lw_txt(m) else ""),
              f"**Below {fmt(st['trigger'])} (rejection low) → puts**" + (f" ({contract})" if contract else "")
-             + f". {tgt}. Invalid: daily close above {fmt(st['invalid'])}."]
+             + f". {tgt}. Invalid: daily close above {fmt(st['invalid'])} ({st['inv_lab']})."
+             + (f" Reward/risk to T1: {st['rr']:.1f}" if st["rr"] == st["rr"] else "")]
     if st["td_buy9"]:
         lines.append("⚠ TD buy 9 in — bounce risk")
     if earn:
@@ -335,12 +352,15 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
         st = put_setup(m)
         if st is None or st["score"] < config.WL_MIN_PUT_SCORE or not st["targets"]:
             continue
+        if not (st["rr"] == st["rr"] and st["rr"] >= config.WL_MIN_RR):
+            continue  # too little room to T1 for the distance to invalidation
         if s in earn:
             continue  # reports inside the option's life: IV crush (our backtest: -23% to -48% median)
-        cands.append((st["score"], st["stage"] == "Rolling over", s, m, st))
-    cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        rr = st["rr"] if st["rr"] == st["rr"] else -1
+        cands.append((st["score"], st["stage"] == "Rolling over", rr, s, m, st))
+    cands.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
     blocks, rows, skipped_wide = [], [], []
-    for sc, _, s, m, st in cands:
+    for sc, _, _, s, m, st in cands:
         if len(blocks) == config.WL_TOP_N:
             break
         contract = None
@@ -357,7 +377,7 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
                      "triggered_date": None, "resolved_date": None})
     head = f"🔻 **Top put setups** — game plan for {nxt:%a %b %d} ({len(cands)} names qualified out of {len(mets)} scanned)"
     if skipped_wide:
-        blocks.append(f"_Skipped, option spreads too wide: {', '.join(skipped_wide[:8])}_")
+        blocks.append(f"_Skipped, no tight contract near the trigger: {', '.join(skipped_wide[:8])}_")
     msgs = chunk(head, blocks) if blocks else [head + "\nNo put setups passed today."]
 
     # ---- core watchlist (both directions)
