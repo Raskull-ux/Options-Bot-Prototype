@@ -45,18 +45,20 @@ def upcoming_earnings(today: pd.Timestamp) -> dict[str, str]:
         return {}
     e = e.assign(d=pd.to_datetime(e["earnings_date"], errors="coerce"))
     e = e[(e["d"] > today) & (e["d"] <= today + timedelta(days=config.WL_EARNINGS_WARN_DAYS))]
-    return {r.symbol: f"{r.d:%a}{' ' + r.hour if isinstance(r.hour, str) and r.hour else ''}" for r in e.itertuples()}
+    return {r.symbol: f"{r.d:%a %m/%d}{' ' + r.hour if isinstance(r.hour, str) and r.hour else ''}" for r in e.itertuples()}
 
 
 # ---------------------------------------------------------------------------
 # Option contract suggestion (real indicative quotes from Alpaca)
 # ---------------------------------------------------------------------------
-def pick_contract(client, symbol: str, side: str, strike_near: float, today: date) -> str | None:
+def pick_contract(client, symbol: str, side: str, strike_near: float, today: date) -> tuple[str | None, str]:
+    """Nearest-strike contract 7-14 days out whose bid/ask spread is at most
+    WL_MAX_SPREAD of its mid. Returns (text, status)."""
     try:
-        snaps = client.get_option_snapshots(symbol, strike_gte=round(strike_near * 0.95, 2),
-                                            strike_lte=round(strike_near * 1.05, 2))
+        snaps = client.get_option_snapshots(symbol, strike_gte=round(strike_near * 0.93, 2),
+                                            strike_lte=round(strike_near * 1.07, 2))
     except Exception:
-        return None
+        return None, "no_quotes"
     want = "C" if side == "bull" else "P"
     lo, hi = today + timedelta(days=config.WL_EXPIRY_MIN_DAYS), today + timedelta(days=config.WL_EXPIRY_MAX_DAYS)
     cands = []
@@ -69,16 +71,17 @@ def pick_contract(client, symbol: str, side: str, strike_near: float, today: dat
             continue
         q = snap.get("latestQuote") or {}
         bid, ask = float(q.get("bp") or 0), float(q.get("ap") or 0)
-        if ask <= 0:
+        if bid <= 0 or ask <= bid:
+            continue
+        mid = (bid + ask) / 2
+        if (ask - bid) / mid > config.WL_MAX_SPREAD:
             continue
         k = int(m["strike"]) / 1000
         cands.append((abs(k - strike_near), abs((exp - today).days - 10), exp, k, bid, ask))
     if not cands:
-        return None
+        return None, "too_wide"
     _, _, exp, k, bid, ask = min(cands)
-    ks = f"{k:g}"
-    px = f"~${(bid + ask) / 2:.2f} (bid {bid:.2f} / ask {ask:.2f})" if bid > 0 else f"ask ${ask:.2f}"
-    return f"{exp:%m/%d} {ks}{want} {px}"
+    return f"{exp:%m/%d} {k:g}{want} ~${(bid + ask) / 2:.2f} ({bid:.2f}/{ask:.2f})", "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +91,27 @@ def lvl_txt(xs: list, n: int = 3) -> str:
     return " · ".join(f"{fmt(p)} ({lab})" for p, lab in xs[:n]) or "none nearby"
 
 
-def gap_txt(m: dict, n: int = 2) -> str:
-    c, gs = m["close"], m.get("gaps", [])
-    above = sorted([g for g in gs if g["lo"] > c], key=lambda g: g["lo"])[:n]
+def merged_gaps(m: dict) -> list[dict]:
+    out: dict = {}
+    for g in m.get("gaps", []):
+        key = (round(g["lo"], 2), round(g["hi"], 2))
+        if key in out:
+            e = out[key]
+            e["tf"] = "+".join(sorted(set(e["tf"].split("+")) | {g["tf"]}))
+            e["skipped"] = e["skipped"] or g["skipped"]
+        else:
+            out[key] = dict(g)
+    return list(out.values())
+
+
+def gap_txt(m: dict, n: int = 2, below_only: bool = False) -> str:
+    c, gs = m["close"], merged_gaps(m)
+    above = [] if below_only else sorted([g for g in gs if g["lo"] > c], key=lambda g: g["lo"])[:n]
     below = sorted([g for g in gs if g["hi"] < c], key=lambda g: -g["hi"])[:n]
-    inside = [g for g in gs if g["lo"] <= c <= g["hi"]]
+    inside = [] if below_only else [g for g in gs if g["lo"] <= c <= g["hi"]]
     f = lambda g, a: f"{a}{fmt(g['lo'])}–{fmt(g['hi'])} {g['tf']}{' ⭐' if g['skipped'] else ''}"
     parts = [f(g, "in ") for g in inside[:1]] + [f(g, "↑") for g in above] + [f(g, "↓") for g in below]
-    return "Open gaps: " + (" · ".join(parts) if parts else "none")
+    return ("Gaps below: " if below_only else "Open gaps: ") + (" · ".join(parts) if parts else "none")
 
 
 def lw_txt(m: dict) -> str:
@@ -104,24 +120,6 @@ def lw_txt(m: dict) -> str:
         return ""
     return (f"Last wk close {fmt(lw)}: touch from above → puts" if m["close"] > lw
             else f"Last wk close {fmt(lw)}: touch from below → calls")
-
-
-def ticker_block(sym: str, m: dict, side: str, sc: int, reasons: list, idea: dict, res: list, sup: list,
-                 contract: str | None, earn: str | None) -> str:
-    icon, word = ("🟢", "bullish") if side == "bull" else ("🔴", "bearish")
-    day = m["close"] / m["prev_close"] - 1
-    t, t1, t2, inv, fl = idea["trigger"], idea["t1"], idea["t2"], idea["invalid"], idea["flip_target"]
-    go, flip = ("Above", "calls") if side == "bull" else ("Below", "puts")
-    other_go, other = ("Below", "puts") if side == "bull" else ("Above", "calls")
-    lines = [f"{icon} **{sym} {fmt(m['close'])}** ({day:+.1%}) — {word} {sc}/9" + (f"  ⚠ earnings {earn}" if earn else ""),
-             " · ".join(reasons + [ta.td_text(m["td"])]),
-             gap_txt(m) + (f" | {lw_txt(m)}" if lw_txt(m) else ""),
-             f"R: {lvl_txt(res)}",
-             f"S: {lvl_txt(sup)}",
-             f"**{go} {fmt(t[0])} → {flip}**" + (f" ({contract})" if contract else "")
-             + f". T1 {fmt(t1[0])} ({t1[1]}), T2 {fmt(t2[0])} ({t2[1]}). Invalid {('below' if side == 'bull' else 'above')} {fmt(inv[0])}.",
-             f"{other_go} {fmt(inv[0])} → {other} toward {fmt(fl[0])} ({fl[1]})."]
-    return "\n".join(lines)
 
 
 def core_line(sym: str, m: dict, res: list, sup: list) -> str:
@@ -176,7 +174,7 @@ def grade_ideas(ideas: pd.DataFrame, frames: dict, max_sessions: int) -> pd.Data
                 if not ((b["high"] >= r["trigger"]) if bull else (b["low"] <= r["trigger"])):
                     continue
                 trig_day = d
-            stop = (b["low"] <= r["invalid"]) if bull else (b["high"] >= r["invalid"])
+            stop = (b["low"] <= r["invalid"]) if bull else (b["close"] >= r["invalid"])  # puts: daily close above
             if stop:
                 status = "t1" if hit_t1 else "stopped"
                 break
@@ -221,6 +219,94 @@ def scorecard(ideas: pd.DataFrame, since: pd.Timestamp | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
+def put_targets(m: dict, trigger: float) -> list[tuple[float, str]]:
+    """Taz's targets: the next levels below -- prior day's low, gap fills, last
+    week's close, daily 8 SMA, then 20/50 SMA and the 20-day low. Each target
+    must sit at least WL_MIN_TARGET_STEP below the one before it."""
+    c = m["close"]
+    lv = [(m["prev_low"], "prior day low"), (m["lw_close"], "last wk close"),
+          (m["sma8"], "8 SMA"), (m["sma20"], "20 SMA"), (m["sma50"], "50 SMA"), (m["lo20"], "20d low")]
+    for g in merged_gaps(m):
+        if g["hi"] < c:
+            star = " ⭐" if g["skipped"] else ""
+            lv += [(g["hi"], f"{g['tf']} gap top{star}"), (g["lo"], f"{g['tf']} gap fill{star}")]
+    lv = sorted([(p, lab) for p, lab in lv if p == p and p < trigger], reverse=True)
+    out, ref = [], trigger
+    for p, lab in lv:
+        if p <= ref * (1 - config.WL_MIN_TARGET_STEP):
+            out.append((p, lab))
+            ref = p
+        if len(out) == 2:
+            break
+    return out
+
+
+def put_setup(m: dict) -> dict | None:
+    """Qualifies through any of three doors, then counts confirmations."""
+    rej = ta.rejection(m)
+    gaps_below = [g for g in merged_gaps(m) if g["hi"] < m["close"]]
+    at_top = m["close"] >= 0.90 * m["hi60"] and m["rsi_max10"] >= 70
+    door = ("exhaustion" if at_top else None) or ("resistance" if rej and gaps_below else None) \
+        or ("failed gap" if m.get("failed_gap_up") else None)
+    if door is None:
+        return None
+    ex = ta.exhaustion(dict(m, rsi=m["rsi_max5"]))
+    td_side, td_n = m["td"]
+    vol_x = m["volume"] / m["vol20"] if m["vol20"] > 0 else 0
+    checks = [
+        (ex is not None, f"RSI {m['rsi_max5']:.0f} {ex['tier'] if ex else ''} (5d)".strip()),
+        (m["ext_atr_max5"] >= config.WL_STRETCH_ATR, f"stretched {m['pct_above_sma20']:+.0%} vs 20 SMA"),
+        (m["rsi_div"], "RSI bear div"),
+        (m["macd_div"], "MACD bear div"),
+        (m["close"] < m["sma10"], "close < 10 SMA"),
+        (m["lower_high"], "lower high"),
+        (m["sma10"] < m["sma20"] or m["sma10"] < m["sma50"], "trend breaker" if m["sma10"] < m["sma50"] else "10<20"),
+        (rej is not None, f"rejected at {fmt(rej[0])} ({rej[1]})" if rej else ""),
+        (bool(m.get("failed_gap_up")), "failed gap-up"),
+        (m["red"] and vol_x >= 1.5, f"red on {vol_x:.1f}x vol"),
+        (bool(gaps_below), "gap below ⭐" if any(g["skipped"] for g in gaps_below) else "gap below"),
+        (td_side == "sell" and 9 <= td_n <= 14, "TD sell 9 ✓"),
+    ]
+    hits = [lab for ok, lab in checks if ok]
+    rolling = m["close"] < m["sma10"] or m["lower_high"] or m.get("failed_gap_up") or (rej is not None and m["red"])
+    trigger = m["day_low"]
+    invalid = max(m["day_high"], rej[0]) if rej else m["day_high"]
+    return {"door": door, "score": len(hits), "hits": hits, "stage": "Rolling over" if rolling else "At the top — not broken yet",
+            "trigger": trigger, "invalid": invalid, "targets": put_targets(m, trigger),
+            "td_buy9": td_side == "buy" and td_n >= 9, "rej": rej}
+
+
+def put_block(sym: str, m: dict, st: dict, contract: str | None, earn: str | None) -> str:
+    t = st["targets"]
+    tgt = ", ".join(f"T{i + 1} {fmt(p)} ({lab})" for i, (p, lab) in enumerate(t)) or "no clean level below — trail it"
+    lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) — **{st['stage']}** · {st['score']}/12 · {ta.td_text(m['td'])}",
+             " · ".join(st["hits"]),
+             gap_txt(m, 2, below_only=True) + (f" | {lw_txt(m)}" if lw_txt(m) else ""),
+             f"**Below {fmt(st['trigger'])} (rejection low) → puts**" + (f" ({contract})" if contract else "")
+             + f". {tgt}. Invalid: daily close above {fmt(st['invalid'])}."]
+    if st["td_buy9"]:
+        lines.append("⚠ TD buy 9 in — bounce risk")
+    if earn:
+        lines.append(f"⚠ earnings {earn}")
+    return "\n".join(lines)
+
+
+def scan_universe(frames: dict, spy) -> list[str]:
+    """Core watchlist + the WL_UNIVERSE_TOP most-traded names (20-day dollar volume)."""
+    uni = universe_symbols()
+    dv = []
+    for s in uni:
+        f = frames.get(s)
+        if f is None or len(f) < 25:
+            continue
+        x = f.iloc[-20:]
+        if x["close"].iloc[-1] < config.WL_MIN_PRICE:
+            continue
+        dv.append(((x["close"] * x["volume"]).mean(), s))
+    top = [s for _, s in sorted(dv, reverse=True)[:config.WL_UNIVERSE_TOP]]
+    return list(dict.fromkeys(config.CORE_WATCHLIST + top))
+
+
 def build_messages(client, today: pd.Timestamp) -> list[str]:
     bars = pd.read_csv(config.BARS_FILE, parse_dates=["date"])
     core_missing = [s for s in config.CORE_WATCHLIST if s not in set(bars["symbol"])]
@@ -233,85 +319,79 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
     spy = frames["SPY"]["close"] if "SPY" in frames else None
     earn = upcoming_earnings(today)
     nxt = today + pd.offsets.BDay(1)
-
-    # rank the universe
-    uni = universe_symbols()
-    scored = []
-    for s in uni:
-        f = frames.get(s)
-        if f is None:
-            continue
-        m = ta.metrics(f, spy)
-        if m is None or m["date"] != today or m["close"] < config.WL_MIN_PRICE or m["dollar_vol20"] < config.WL_MIN_DOLLAR_VOL:
-            continue
-        scored.append((s, m))
-    msgs = []
-    rows = []
-    for side, title in (("bull", "🟢 **Top bullish**"), ("bear", "🔴 **Top bearish**")):
-        ranked = []
-        for s, m in scored:
-            sc, why = ta.score(m, side)
-            if sc >= config.WL_MIN_SCORE:
-                rs = abs(m["rs20"]) if not np.isnan(m["rs20"]) else 0
-                volx = m["volume"] / m["vol20"] if m["vol20"] > 0 else 0
-                ranked.append((sc, rs, volx, s, m, why))
-        ranked.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-        blocks = []
-        for sc, _, _, s, m, why in ranked[:config.WL_TOP_N]:
-            res, sup = ta.split_levels(m, ta.levels(m))
-            idea = ta.idea(m, side, res, sup)
-            contract = pick_contract(client, s, side, idea["trigger"][0], nxt.date()) if client is not None else None
-            blocks.append(ticker_block(s, m, side, sc, why, idea, res, sup, contract, earn.get(s)))
-            rows.append({"date": today.strftime("%Y-%m-%d"), "symbol": s, "side": side, "score": sc, "close": m["close"],
-                         "trigger": idea["trigger"][0], "t1": idea["t1"][0], "t2": idea["t2"][0],
-                         "invalid": idea["invalid"][0], "contract": contract, "status": "open",
-                         "triggered_date": None, "resolved_date": None})
-        if blocks:
-            msgs += chunk(f"{title} — game plan for {nxt:%a %b %d} ({len(ranked)} names scored {config.WL_MIN_SCORE}+/9)", blocks)
-        else:
-            msgs.append(f"{title}: no names scored {config.WL_MIN_SCORE}+/9 today.")
-
-    # core watchlist
-    core = []
-    for s in config.CORE_WATCHLIST:
+    names = scan_universe(frames, spy)
+    mets = {}
+    for s in names:
         f = frames.get(s)
         m = ta.metrics(f, spy) if f is not None else None
+        if m is not None and m["date"] == today:
+            mets[s] = m
+
+    # ---- put setups
+    cands = []
+    for s, m in mets.items():
+        if s in ("SPY", "QQQ"):
+            continue  # index ETFs live in the core watchlist
+        st = put_setup(m)
+        if st is None or st["score"] < config.WL_MIN_PUT_SCORE or not st["targets"]:
+            continue
+        if s in earn:
+            continue  # reports inside the option's life: IV crush (our backtest: -23% to -48% median)
+        cands.append((st["score"], st["stage"] == "Rolling over", s, m, st))
+    cands.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    blocks, rows, skipped_wide = [], [], []
+    for sc, _, s, m, st in cands:
+        if len(blocks) == config.WL_TOP_N:
+            break
+        contract = None
+        if client is not None:
+            contract, status = pick_contract(client, s, "bear", st["trigger"], nxt.date())
+            if contract is None:
+                skipped_wide.append(s)
+                continue
+        blocks.append(put_block(s, m, st, contract, None))
+        t = st["targets"] + [(np.nan, "")] * 2
+        rows.append({"date": today.strftime("%Y-%m-%d"), "symbol": s, "side": "bear", "score": sc, "close": m["close"],
+                     "trigger": st["trigger"], "t1": t[0][0], "t2": t[1][0] if t[1][0] == t[1][0] else t[0][0],
+                     "invalid": st["invalid"], "contract": contract, "status": "open",
+                     "triggered_date": None, "resolved_date": None})
+    head = f"🔻 **Top put setups** — game plan for {nxt:%a %b %d} ({len(cands)} names qualified out of {len(mets)} scanned)"
+    if skipped_wide:
+        blocks.append(f"_Skipped, option spreads too wide: {', '.join(skipped_wide[:8])}_")
+    msgs = chunk(head, blocks) if blocks else [head + "\nNo put setups passed today."]
+
+    # ---- core watchlist (both directions)
+    core = []
+    for s in config.CORE_WATCHLIST:
+        m = mets.get(s)
         if m is None:
-            core.append(f"**{s}**: not enough data")
+            core.append(f"**{s}**: no data today")
             continue
         res, sup = ta.split_levels(m, ta.levels(m))
         core.append(core_line(s, m, res, sup))
     msgs += chunk("📋 **Core watchlist**", core)
 
-    # exhaustion watch (universe + core), RSI tiers 80 / 85 / 90+
-    ex = []
-    seen = set()
-    for s, m in scored + [(s, ta.metrics(frames[s], spy)) for s in config.CORE_WATCHLIST if s in frames]:
-        if m is None or s in seen:
-            continue
-        seen.add(s)
-        e = ta.exhaustion(m)
-        if e:
-            ex.append((m["rsi"], s, m, e))
-    ex.sort(reverse=True, key=lambda x: x[0])
+    # ---- exhaustion watch
+    ex = [(m["rsi"], s, m, ta.exhaustion(m)) for s, m in mets.items() if ta.exhaustion(m)]
+    ex.sort(key=lambda x: x[0], reverse=True)
     if ex:
-        lines = [f"**{s} {fmt(m['close'])}** RSI {r:.1f} **{e['tier']}** · {e['extension_atr']:+.1f} ATR above 20 SMA · {ta.td_text(m['td'])}"
-                 + (" · RSI divergence" if e["divergence"] else "") for r, s, m, e in ex[:config.WL_EXHAUSTION_N]]
+        lines = [f"**{s} {fmt(m['close'])}** RSI {r:.1f} **{e['tier']}** · {m['pct_above_sma20']:+.0%} vs 20 SMA · {ta.td_text(m['td'])}"
+                 + (" · RSI div" if m["rsi_div"] else "") + (" · MACD div" if m["macd_div"] else "")
+                 for r, s, m, e in ex[:config.WL_EXHAUSTION_N]]
         msgs += chunk("🔥 **Exhaustion watch** (RSI 80 early · 85 elevated · 90+ extreme)", lines, sep="\n")
 
-    failed = [(s, m) for s, m in scored + [(s, ta.metrics(frames[s], spy)) for s in config.CORE_WATCHLIST if s in frames]
-              if m is not None and m.get("failed_gap_up")]
-    seen_f, flines = set(), []
-    for s, m in failed:
-        if s in seen_f:
-            continue
-        seen_f.add(s)
-        flines.append(f"**{s} {fmt(m['close'])}** gapped above its 20d high and filled back down → **put trigger** · "
-                      f"invalid above {fmt(m['day_high'])} (day high) · {ta.td_text(m['td'])}")
-    if flines:
-        msgs += chunk("⚠️ **Failed gap-ups** (gap above resistance that filled back down)", flines[:8], sep="\n")
+    # ---- failed gap-ups: invalid on a daily close back above the gap
+    fl = []
+    for s, m in mets.items():
+        if m.get("failed_gap_up"):
+            f = frames[s]
+            gap_bottom = max(f["open"].iloc[-2], f["close"].iloc[-2])
+            fl.append(f"**{s} {fmt(m['close'])}** gapped above its 20d high and filled back down → **puts below {fmt(m['day_low'])}** · "
+                      f"invalid: daily close back above the gap ({fmt(gap_bottom)}) · {ta.td_text(m['td'])}")
+    if fl:
+        msgs += chunk("⚠️ **Failed gap-ups**", fl[:8], sep="\n")
 
-    # log + grade
+    # ---- log + grade + weekly scorecard
     try:
         ideas = pd.read_csv(config.WL_IDEAS_FILE)
     except FileNotFoundError:
