@@ -307,3 +307,9 @@ WL_STRETCH_ATR = 2.5             # "stretched": close this many average daily ra
 WL_MIN_TARGET_STEP = 0.005       # each target at least 0.5% below the previous level
 WL_MAX_STRIKE_DIST = 0.025       # suggested put strike must be within 2.5% of the trigger
 WL_MIN_RR = 0.3                  # minimum (trigger - T1) / (invalid - trigger) to post a setup
+WL_PUT_RULE = "exh_core"          # which rule in daily_watchlist.PUT_RULES picks put setups.
+                                 # exh_core = RSI or MACD bearish divergence + (RSI 80+ in 5d or TD sell 9).
+                                 # Provisional until backtest_research.py picks the out-of-sample winner.
+
+# --- 10-day candle gauge (context only, never an alert) ---
+TEN_DAY_ANCHOR = "2026-10-09"    # a date on which a 10-day candle ENDS on Taz's Robinhood chart
