@@ -1,9 +1,9 @@
 # Pre-market post (~9:15 AM ET in summer, 8:15 AM ET in winter; GitHub cron runs in UTC).
 #
 # For the core watchlist plus yesterday's ranked picks: the pre-market price,
-# where it sits against LAST WEEK'S CLOSE (touch from above = puts, from below =
-# calls), the nearest open gaps from yesterday's close, and whether yesterday's
-# trigger is already through. Pre-market prices are IEX trades (thin before the
+# where it sits against last week's close (shown as a level), the nearest open
+# gaps from yesterday's close, and whether yesterday's trigger is already
+# through. Pre-market prices are IEX trades (thin before the
 # open); a name with no trade yet today shows yesterday's close.
 import os
 import sys
@@ -45,10 +45,7 @@ def line(sym: str, m: dict, px: float | None, live: bool, idea: dict | None) -> 
     parts = [head]
     lw = m.get("lw_close", np.nan)
     if not np.isnan(lw):
-        if p > lw:
-            parts.append(f"{(p / lw - 1):+.1%} above last wk close {fmt(lw)} → touch = **puts**")
-        else:
-            parts.append(f"{(p / lw - 1):+.1%} below last wk close {fmt(lw)} → touch = **calls**")
+        parts.append(f"{(p / lw - 1):+.1%} vs last wk close {fmt(lw)}")
     gap_dir = "gapping UP over yesterday's body" if p > max(m["prev_body_hi"], c) and live else (
         "gapping DOWN under yesterday's body" if p < m["prev_body_lo"] and live else "")
     if gap_dir:
