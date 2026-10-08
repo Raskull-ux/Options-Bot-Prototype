@@ -117,11 +117,12 @@ def gap_txt(m: dict, n: int = 2, below_only: bool = False) -> str:
 
 
 def lw_txt(m: dict) -> str:
+    """Last week's close shown as a LEVEL. The touch-trigger version failed as a
+    signal in testing (about 50/50), so the bot no longer says puts/calls on it."""
     lw = m.get("lw_close", np.nan)
     if np.isnan(lw):
         return ""
-    return (f"Last wk close {fmt(lw)}: touch from above → puts" if m["close"] > lw
-            else f"Last wk close {fmt(lw)}: touch from below → calls")
+    return f"Last wk close {fmt(lw)} ({'below' if m['close'] > lw else 'above'} price)"
 
 
 def core_line(sym: str, m: dict, res: list, sup: list) -> str:
@@ -243,46 +244,97 @@ def put_targets(m: dict, trigger: float) -> list[tuple[float, str]]:
     return out
 
 
-def put_setup(m: dict) -> dict | None:
-    """Qualifies through any of three doors, then counts confirmations."""
+def put_features(m: dict) -> tuple[dict, list[str], tuple | None]:
+    """Every put confirmation as a yes/no flag, plus display labels. Shared by
+    the live scanner and backtest_research.py so both judge setups identically."""
     rej = ta.rejection(m)
     gaps_below = [g for g in merged_gaps(m) if g["hi"] < m["close"]]
-    at_top = m["close"] >= 0.90 * m["hi60"] and m["rsi_max10"] >= 70
-    door = ("exhaustion" if at_top else None) or ("resistance" if rej and gaps_below else None) \
-        or ("failed gap" if m.get("failed_gap_up") else None)
-    if door is None:
-        return None
     ex = ta.exhaustion(dict(m, rsi=m["rsi_max5"]))
     td_side, td_n = m["td"]
     vol_x = m["volume"] / m["vol20"] if m["vol20"] > 0 else 0
-    checks = [
-        (ex is not None, f"RSI {m['rsi_max5']:.0f} {ex['tier'] if ex else ''} (5d)".strip()),
-        (m["ext_atr_max5"] >= config.WL_STRETCH_ATR, f"stretched {m['pct_above_sma20_max5']:+.0%} over 20 SMA (5d peak)"),
-        (m["rsi_div"], "RSI bear div"),
-        (m["macd_div"], "MACD bear div"),
-        (m["close"] < m["sma10"], "close < 10 SMA"),
-        (m["lower_high"], "lower high"),
-        (m["sma10"] < m["sma20"] or m["sma10"] < m["sma50"], "trend breaker" if m["sma10"] < m["sma50"] else "10<20"),
-        (rej is not None, f"rejected at {fmt(rej[0])} ({rej[1]})" if rej else ""),
-        (bool(m.get("failed_gap_up")), "failed gap-up"),
-        (m["red"] and vol_x >= 1.5, f"red on {vol_x:.1f}x vol"),
-        (bool(gaps_below), "gap below ⭐" if any(g["skipped"] for g in gaps_below) else "gap below"),
-        (td_side == "sell" and 9 <= td_n <= 14, "TD sell 9 ✓"),
+    f = {
+        "rsi80": ex is not None,
+        "stretched": m["ext_atr_max5"] >= config.WL_STRETCH_ATR,
+        "rsi_div": bool(m["rsi_div"]),
+        "macd_div": bool(m["macd_div"]),
+        "below10": m["close"] < m["sma10"],
+        "lower_high": bool(m["lower_high"]),
+        "trend": m["sma10"] < m["sma20"] or m["sma10"] < m["sma50"],
+        "rej": rej is not None,
+        "rej_key": rej is not None and any(k in rej[1] for k in ("gap", "50 SMA", "200 SMA")),
+        "failed_gap": bool(m.get("failed_gap_up")),
+        "red_vol": bool(m["red"] and vol_x >= 1.5),
+        "gap_below": bool(gaps_below),
+        "td9": td_side == "sell" and 9 <= td_n <= 14,
+        "td_buy9": td_side == "buy" and td_n >= 9,
+        "at_top": m["close"] >= 0.90 * m["hi60"] and m["rsi_max10"] >= 70,
+        "near_high": m["close"] >= 0.95 * m["hi60"],
+    }
+    labels = [
+        (f["rsi80"], f"RSI {m['rsi_max5']:.0f} {ex['tier'] if ex else ''} (5d)".strip()),
+        (f["stretched"], f"stretched {m['pct_above_sma20_max5']:+.0%} over 20 SMA (5d peak)"),
+        (f["rsi_div"], "RSI bear div"),
+        (f["macd_div"], "MACD bear div"),
+        (f["below10"], "close < 10 SMA"),
+        (f["lower_high"], "lower high"),
+        (f["trend"], "trend breaker" if m["sma10"] < m["sma50"] else "10<20"),
+        (f["rej"], f"rejected at {fmt(rej[0])} ({rej[1]})" if rej else ""),
+        (f["failed_gap"], "failed gap-up"),
+        (f["red_vol"], f"red on {vol_x:.1f}x vol"),
+        (f["gap_below"], "gap below ⭐" if any(g["skipped"] for g in gaps_below) else "gap below"),
+        (f["td9"], "TD sell 9 ✓"),
     ]
-    hits = [lab for ok, lab in checks if ok]
-    rolling = m["close"] < m["sma10"] or m["lower_high"] or m.get("failed_gap_up") or (rej is not None and m["red"])
+    hits = [lab for ok, lab in labels if ok]
+    f["score12"] = len(hits)
+    f["core4"] = int(f["rsi_div"]) + int(f["macd_div"]) + int(f["rsi80"]) + int(f["td9"])
+    f["door"] = ("exhaustion" if f["at_top"] else None) or ("resistance" if f["rej"] and f["gap_below"] else None) \
+        or ("failed gap" if f["failed_gap"] else None)
+    return f, hits, rej
+
+
+def _exh_core(f: dict) -> bool:
+    return (f["rsi_div"] or f["macd_div"]) and (f["rsi80"] or f["td9"])
+
+
+# Candidate put rules. Defined ONCE here; the live scanner uses config.WL_PUT_RULE
+# and backtest_research.py scores all of them on the same data.
+PUT_RULES = {
+    "v1_live":           lambda f: f["door"] is not None and f["score12"] >= config.WL_MIN_PUT_SCORE,
+    "exh_core":          _exh_core,
+    "exh_core_rolled":   lambda f: _exh_core(f) and f["below10"],
+    "div_both":          lambda f: f["rsi_div"] and f["macd_div"],
+    "div_rsi80":         lambda f: (f["rsi_div"] or f["macd_div"]) and f["rsi80"],
+    "div_near_high":     lambda f: (f["rsi_div"] or f["macd_div"]) and f["near_high"],
+    "exh_core_keylevel": lambda f: _exh_core(f) and f["rej_key"],
+    "exh_core_no_tdbuy": lambda f: _exh_core(f) and not f["td_buy9"],
+}
+
+
+def put_geometry(m: dict, rej) -> dict:
+    """Trigger = rejection low (day low); invalid = the rejected level, the gap
+    (failed gap-up), or the day high; targets = Taz's next levels below."""
     trigger = m["day_low"]
     if rej is not None:
-        invalid, inv_lab = rej[0], rej[1]                       # reclaiming the rejected level kills it
+        invalid, inv_lab = rej[0], rej[1]
     elif m.get("failed_gap_up"):
         invalid, inv_lab = m["prev_body_hi"], "back above the gap"
     else:
         invalid, inv_lab = m["day_high"], "day high"
     targets = put_targets(m, trigger)
     rr = (trigger - targets[0][0]) / (invalid - trigger) if targets and invalid > trigger else np.nan
-    return {"door": door, "score": len(hits), "hits": hits, "stage": "Rolling over" if rolling else "At the top — not broken yet",
-            "trigger": trigger, "invalid": invalid, "inv_lab": inv_lab, "targets": targets, "rr": rr,
-            "td_buy9": td_side == "buy" and td_n >= 9, "rej": rej}
+    return {"trigger": trigger, "invalid": invalid, "inv_lab": inv_lab, "targets": targets, "rr": rr}
+
+
+def put_setup(m: dict, rule: str | None = None) -> dict | None:
+    rule = rule or config.WL_PUT_RULE
+    f, hits, rej = put_features(m)
+    if not PUT_RULES[rule](f):
+        return None
+    rolling = f["below10"] or f["lower_high"] or f["failed_gap"] or (f["rej"] and m["red"])
+    score = f["score12"] if rule == "v1_live" else f["core4"]
+    return {"door": f["door"] or "exhaustion core", "score": score, "score_of": 12 if rule == "v1_live" else 4,
+            "hits": hits, "features": f, "stage": "Rolling over" if rolling else "At the top — not broken yet",
+            "td_buy9": f["td_buy9"], "rej": rej, **put_geometry(m, rej)}
 
 
 def put_lw_txt(m: dict) -> str:
@@ -295,8 +347,8 @@ def put_lw_txt(m: dict) -> str:
 def put_block(sym: str, m: dict, st: dict, contract: str | None, earn: str | None) -> str:
     t = st["targets"]
     tgt = ", ".join(f"T{i + 1} {fmt(p)} ({lab})" for i, (p, lab) in enumerate(t)) or "no clean level below — trail it"
-    lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) — **{st['stage']}** · {st['score']}/12 · {ta.td_text(m['td'])}",
-             " · ".join(st["hits"]),
+    lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) — **{st['stage']}** · {st['score']}/{st['score_of']}{' exhaustion' if st['score_of'] == 4 else ''} · {ta.td_text(m['td'])}",
+             " · ".join(h for h in st["hits"] if h != "failed gap-up"),
              gap_txt(m, 2, below_only=True) + (f" | {put_lw_txt(m)}" if put_lw_txt(m) else ""),
              f"**Below {fmt(st['trigger'])} (rejection low) → puts**" + (f" ({contract})" if contract else "")
              + f". {tgt}. Invalid: daily close above {fmt(st['invalid'])} ({st['inv_lab']})."
@@ -350,7 +402,7 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
         if s in ("SPY", "QQQ"):
             continue  # index ETFs live in the core watchlist
         st = put_setup(m)
-        if st is None or st["score"] < config.WL_MIN_PUT_SCORE or not st["targets"]:
+        if st is None or not st["targets"]:
             continue
         if not (st["rr"] == st["rr"] and st["rr"] >= config.WL_MIN_RR):
             continue  # too little room to T1 for the distance to invalidation
@@ -400,16 +452,7 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
                  for r, s, m, e in ex[:config.WL_EXHAUSTION_N]]
         msgs += chunk("🔥 **Exhaustion watch** (RSI 80 early · 85 elevated · 90+ extreme)", lines, sep="\n")
 
-    # ---- failed gap-ups: invalid on a daily close back above the gap
-    fl = []
-    for s, m in mets.items():
-        if m.get("failed_gap_up"):
-            f = frames[s]
-            gap_bottom = max(f["open"].iloc[-2], f["close"].iloc[-2])
-            fl.append(f"**{s} {fmt(m['close'])}** gapped above its 20d high and filled back down → **puts below {fmt(m['day_low'])}** · "
-                      f"invalid: daily close back above the gap ({fmt(gap_bottom)}) · {ta.td_text(m['td'])}")
-    if fl:
-        msgs += chunk("⚠️ **Failed gap-ups**", fl[:8], sep="\n")
+    # (Failed gap-up section removed: failed testing -- stocks went UP on average.)
 
     # ---- log + grade + weekly scorecard
     try:
