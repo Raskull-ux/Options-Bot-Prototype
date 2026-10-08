@@ -144,8 +144,29 @@ def post(msg: str, url: str) -> None:
         raise RuntimeError(f"Discord returned {r.status_code}: {r.text[:200]}")
 
 
+def gauge_line(client) -> str:
+    """QQQ 10-day candles, 10 EMA vs 10 SMA. Context only."""
+    from lib.crosses import ten_day_gauge
+    raw = client.get_daily_bars(["QQQ"], lookback_days=700, feed=config.STOCK_BARS_FEED).get("QQQ", [])
+    if len(raw) < 120:
+        return ""
+    q = pd.DataFrame([{"date": pd.Timestamp(b["t"][:10]), "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"]} for b in raw]).set_index("date")
+    g = ten_day_gauge(q, config.TEN_DAY_ANCHOR)
+    state = "**bearish** (10 EMA below 10 SMA)" if g["bearish"] else "not bearish (10 EMA above 10 SMA)"
+    return (f"**QQQ 10-day chart:** {state} · 10 EMA {g['ema10']:.2f} / 10 SMA {g['sma10']:.2f} · "
+            f"candle {g['candle_days_so_far']}/10 days in. Big-picture gauge, not a signal.")
+
+
 def all_messages() -> list[str]:
     msgs = [build_message()]
+    try:
+        from lib.alpaca_client import AlpacaClient
+        if os.environ.get("APCA_API_KEY_ID"):
+            line = gauge_line(AlpacaClient())
+            if line and len(msgs[0]) + len(line) + 2 <= DISCORD_LIMIT:
+                msgs[0] = msgs[0] + "\n\n" + line
+    except Exception:
+        traceback.print_exc()
     if getattr(config, "WATCHLIST_ENABLED", False):
         import daily_watchlist
         reg = pd.read_csv(config.REGIME_STATE_FILE).sort_values("date")
