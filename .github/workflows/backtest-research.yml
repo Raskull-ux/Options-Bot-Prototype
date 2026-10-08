@@ -1,0 +1,31 @@
+name: Put rule research
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Score every put rule; choose on 2024-25; test once on 2026
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python backtest_research.py
+      - name: Commit results
+        if: always()
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/research_stockdays.csv.gz || true
+          if git diff --cached --quiet; then echo "No changes."; else
+            git commit -m "Put rule research: $(date -u +%Y-%m-%d)"; git pull --rebase --autostash; git push; fi
