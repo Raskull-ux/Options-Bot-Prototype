@@ -34,9 +34,12 @@ SYMBOLS = ["QQQ", "SPY", "NVDA", "TSLA", "AMD", "META", "NFLX", "COIN", "INTC", 
            "AVGO", "PLTR", "MU", "ORCL", "CRM", "UBER", "SHOP", "MSTR", "HOOD", "ARM", "LLY", "JPM", "XOM", "BA",
            "DIS", "WMT", "COST"]
 INDEXES = {"QQQ", "SPY"}
-HOURLY_FROM = "2024-07-01"
-TEST_FROM = "2024-10-01"
-SPLIT = "2026-01-01"            # period check: 2024-10..2025-12 vs 2026
+# Hourly candles run 24 hours like Taz's Thinkorswim chart: regular feed 4 AM-8 PM ET
+# + Blue Ocean overnight (feed=boats) 8 PM-4 AM ET. Overnight history starts Jan 2025.
+HOURLY_FROM = "2025-01-02"
+TEST_FROM = "2025-02-01"        # after ~8 days of 24h warm-up for the 200-hour SMA
+DAILY_FROM = "2024-10-01"       # daily tests keep their original window (daily is the same on every platform)
+SPLIT = "2026-01-01"            # period check: Feb-Dec 2025 vs 2026
 WINDOW_H = 36
 NEAR = 0.004
 ENTRY_HOURS = range(9, 15)       # 9:00 ... 14:00 candles
@@ -46,7 +49,7 @@ PASS_RULES = """PASS RULES (fixed before any result is computed):
     1. average real move per trade > 0
     2. beats the no-cross control (same tag of the 50, 20 above 50) with t >= 2
     3. still > 0 on average with SPY's move removed
-    4. beats the control in BOTH periods: Oct 2024-Dec 2025 AND 2026
+    4. beats the control in BOTH periods: Feb-Dec 2025 AND 2026
   DAILY 20/50 (at +5 days), DAILY 10/10 (+5 days), HOURLY 10/10 (+12 hours) each pass only if:
     1. beats every-day / any-hour with t >= 2 (real move)
     2. still > 0 on average with SPY's move removed"""
@@ -56,12 +59,12 @@ def log(msg):
     print(f"[{datetime.now(timezone.utc).isoformat()}] {msg}", flush=True)
 
 
-def fetch_bars(client, symbols, timeframe, start):
+def fetch_bars(client, symbols, timeframe, start, feed=None):
     rows, token = [], None
     end = (datetime.now(timezone.utc) - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
     while True:
         p = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": start, "end": end,
-             "limit": 10000, "feed": config.STOCK_BARS_FEED, "adjustment": "split"}
+             "limit": 10000, "feed": feed or config.STOCK_BARS_FEED, "adjustment": "split"}
         if token:
             p["page_token"] = token
         body = client._get(f"{DATA}/v2/stocks/bars", p)
@@ -188,7 +191,8 @@ def hourly_events(sym, g, daily, spy_end):
         k0 = known.iloc[-1]
         end_t = ti + pd.Timedelta(hours=WINDOW_H)
         ev = {"symbol": sym, "cross_t": ti, "trade_day": day.date(),
-              "cross_when": "pre-market" if ti.hour < 9 else ("after hours" if ti.hour >= 16 else "regular hours"),
+              "cross_when": ("overnight" if ti.hour >= 20 or ti.hour < 4 else "pre-market" if ti.hour < 9
+                             else "after hours" if ti.hour >= 16 else "regular hours"),
               "scenario": classify_open(op, k0["sma50"], k0["sma200"]),
               "macd_bear": bool(g["macd"].iloc[i] < g["macd_sig"].iloc[i]),
               "s50_below_200": bool(g["sma50"].iloc[i] < g["sma200"].iloc[i]), "daily_20_below_50": d_bear}
@@ -260,8 +264,13 @@ def main():
     print(PASS_RULES)
     client = AlpacaClient()
     log(f"hourly bars for {len(SYMBOLS)} symbols since {HOURLY_FROM}...")
-    hb = fetch_bars(client, SYMBOLS, "1Hour", HOURLY_FROM)
-    hb = hb[(hb["t"].dt.hour >= 4) & (hb["t"].dt.hour < 20)]
+    day = fetch_bars(client, SYMBOLS, "1Hour", HOURLY_FROM)
+    day = day[(day["t"].dt.hour >= 4) & (day["t"].dt.hour < 20)]
+    log(f"  -> {len(day)} bars 4 AM-8 PM; adding overnight 8 PM-4 AM (Blue Ocean)...")
+    night = fetch_bars(client, SYMBOLS, "1Hour", HOURLY_FROM, feed="boats")
+    night = night[(night["t"].dt.hour >= 20) | (night["t"].dt.hour < 4)]
+    hb = (pd.concat([day, night]).drop_duplicates(["symbol", "t"]).sort_values(["symbol", "t"]).reset_index(drop=True))
+    log(f"  -> {len(night)} overnight bars; {len(hb)} total 24-hour candles")
     log(f"  -> {len(hb)} hourly bars")
     db = fetch_bars(client, SYMBOLS, "1Day", "2022-06-01")
     db["date"] = pd.to_datetime(db["t"].dt.date)
@@ -338,7 +347,7 @@ def main():
         whip = pd.concat([(g["ema10"].shift(-q) > g["sma10"].shift(-q)) for q in (1, 2, 3)], axis=1).any(axis=1)
         for i in range(len(g)):
             dte = g["date"].iloc[i]
-            if dte < pd.Timestamp(TEST_FROM):
+            if dte < pd.Timestamp(DAILY_FROM):
                 continue
             r = {"symbol": s, "day": dte.date(), "x2050": bool(x2050.iloc[i]), "x1010": bool(x1010.iloc[i]), "whip": bool(whip.iloc[i])}
             for k in (1, 3, 5, 10):
