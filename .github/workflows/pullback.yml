@@ -1,0 +1,31 @@
+name: Pullback study
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pullback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Pullback study (first 1-3 hours after the tag)
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+        run: python backtest_pullback.py
+      - name: Save results
+        if: always()
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/pullback_rows.csv.gz || true
+          if git diff --cached --quiet; then echo "No changes."; else
+            git commit -m "Pullback study: $(date -u +%Y-%m-%d)"; git pull --rebase --autostash; git push; fi
