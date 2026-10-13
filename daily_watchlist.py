@@ -163,6 +163,8 @@ def grade_ideas(ideas: pd.DataFrame, frames: dict, max_sessions: int) -> pd.Data
     Conservative: if invalidation and a target print on the same day, the stop
     is assumed to have come first."""
     ideas = ideas.copy()
+    for c in ("status", "triggered_date", "resolved_date"):   # empty CSV columns load as numbers; dates need text
+        ideas[c] = ideas[c].astype(object)
     for i, r in ideas[ideas["status"] == "open"].iterrows():
         f = frames.get(r["symbol"])
         if f is None:
