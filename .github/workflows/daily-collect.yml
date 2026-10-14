@@ -39,7 +39,15 @@ jobs:
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-        run: python daily_collect.py
+        run: |
+          set -o pipefail
+          python daily_collect.py 2>&1 | tee collect.log
+
+      - name: Show why the collector failed (readable without the log viewer)
+        if: failure()
+        run: |
+          msg=$(tail -n 25 collect.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=daily_collect failed::${msg}"
 
       - name: Run signal engine
         run: python signal_engine.py
