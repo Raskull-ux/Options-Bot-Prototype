@@ -30,15 +30,23 @@ class AlpacaClient:
 
     def _get(self, url: str, params: dict | None = None, retries: int = 3) -> dict:
         last_err = None
-        for attempt in range(retries):
+        attempt, limited = 0, 0
+        while attempt < retries:
             try:
                 r = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
             except requests.RequestException as e:
                 last_err = e
-                time.sleep(1.5 * (attempt + 1))
+                attempt += 1
+                time.sleep(1.5 * attempt)
                 continue
-            if r.status_code == 429:  # rate limited -- back off and retry
-                time.sleep(2.0 * (attempt + 1))
+            if r.status_code == 429:
+                # Rate limited. The free plan's 200 requests/minute is shared by EVERYTHING using this key
+                # (other bots, research jobs), so wait out a full minute window before giving up.
+                limited += 1
+                last_err = "HTTP 429 rate limited (key shared with another job?)"
+                if limited > 12:
+                    break
+                time.sleep(min(5.0 * limited, 30.0))
                 continue
             if r.status_code != 200:
                 raise AlpacaError(f"GET {url} -> HTTP {r.status_code}: {r.text[:300]}")
