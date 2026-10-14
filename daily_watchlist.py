@@ -1,12 +1,16 @@
 # Daily watchlist -> Discord messages.
 #
-#   Top bullish / top bearish names (scored 0-9 on Taz's rules), each with
-#   resistance/support levels (day H/L, 20d H/L, 8/10/20/50/200 SMA, 60-day
-#   fibs), an "above X calls / below Y puts" idea with targets and
-#   invalidation, and a real option contract quote 7-14 days out.
-#   Core watchlist with levels. RSI exhaustion watch (80 / 85 / 90+ tiers).
-#   Every ranked idea is logged and graded over the next 5 sessions; a weekly
-#   scorecard reports how the ideas actually did.
+#   LEVELS ONLY. No trade calls and no contract picks: the put rule behind the
+#   bearish watch failed its out-of-sample test (Oct 2026), and the core-list
+#   levels were never tested as signals. Members get data, not instructions.
+#
+#   Bearish watch: names showing exhaustion/divergence near resistance, with
+#   the levels below them (rejection low, next supports, gaps) and the level
+#   where the bearish structure fails.
+#   Core watchlist: nearest level above and below, moving averages, gaps,
+#   last week's close. RSI exhaustion watch (80 / 85 / 90+ tiers).
+#   Each bearish-watch name is still logged and graded privately over the next
+#   5 sessions (data/watchlist_ideas.csv) so the list can be judged honestly.
 import re
 from datetime import date, timedelta
 
@@ -49,7 +53,8 @@ def upcoming_earnings(today: pd.Timestamp) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Option contract suggestion (real indicative quotes from Alpaca)
+# Option contract suggestion (real indicative quotes from Alpaca).
+# NOT used by the Discord posts anymore (levels only). Kept for research scripts.
 # ---------------------------------------------------------------------------
 def pick_contract(client, symbol: str, side: str, strike_near: float, today: date) -> tuple[str | None, str]:
     """Nearest-strike contract 7-14 days out whose bid/ask spread is at most
@@ -132,7 +137,7 @@ def core_line(sym: str, m: dict, res: list, sup: list) -> str:
     up = res[0] if res else (m["close"] + m["atr"], "+1 ATR")
     dn = sup[0] if sup else (m["close"] - m["atr"], "-1 ATR")
     return (f"**{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) {bias} (bull {b}/9, bear {br}/9) · RSI {m['rsi']:.0f} · {ta.td_text(m['td'])}\n"
-            f"  Above {fmt(up[0])} ({up[1]}) → calls · Below {fmt(dn[0])} ({dn[1]}) → puts · "
+            f"  Level above {fmt(up[0])} ({up[1]}) · level below {fmt(dn[0])} ({dn[1]}) · "
             f"10/20/50 SMA {fmt(m['sma10'])}/{fmt(m['sma20'])}/{fmt(m['sma50'])}\n"
             f"  {gap_txt(m, 1)}" + (f" · {lw_txt(m)}" if lw_txt(m) else ""))
 
@@ -335,7 +340,7 @@ def put_setup(m: dict, rule: str | None = None) -> dict | None:
     rolling = f["below10"] or f["lower_high"] or f["failed_gap"] or (f["rej"] and m["red"])
     score = f["score12"] if rule == "v1_live" else f["core4"]
     return {"door": f["door"] or "exhaustion core", "score": score, "score_of": 12 if rule == "v1_live" else 4,
-            "hits": hits, "features": f, "stage": "Rolling over" if rolling else "At the top — not broken yet",
+            "hits": hits, "features": f, "stage": "Rolling over" if rolling else "At the top, not broken yet",
             "td_buy9": f["td_buy9"], "rej": rej, **put_geometry(m, rej)}
 
 
@@ -346,17 +351,17 @@ def put_lw_txt(m: dict) -> str:
     return f"Last wk close {fmt(lw)} overhead (resistance)" if lw > m["close"] else f"Last wk close {fmt(lw)} below (target)"
 
 
-def put_block(sym: str, m: dict, st: dict, contract: str | None, earn: str | None) -> str:
-    t = st["targets"]
-    tgt = ", ".join(f"T{i + 1} {fmt(p)} ({lab})" for i, (p, lab) in enumerate(t)) or "no clean level below — trail it"
-    lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) — **{st['stage']}** · {st['score']}/{st['score_of']}{' exhaustion' if st['score_of'] == 4 else ''} · {ta.td_text(m['td'])}",
+def put_block(sym: str, m: dict, st: dict, earn: str | None) -> str:
+    """One bearish-watch name: what it shows, and the levels. No call, no contract."""
+    nxt = " · ".join(f"{fmt(p)} ({lab})" for p, lab in st["targets"]) or "no clean level below"
+    lines = [f"🔻 **{sym} {fmt(m['close'])}** ({m['close'] / m['prev_close'] - 1:+.1%}) · **{st['stage']}** · "
+             f"{st['score']}/{st['score_of']}{' exhaustion' if st['score_of'] == 4 else ''} · {ta.td_text(m['td'])}",
              " · ".join(h for h in st["hits"] if h != "failed gap-up"),
              gap_txt(m, 2, below_only=True) + (f" | {put_lw_txt(m)}" if put_lw_txt(m) else ""),
-             f"**Below {fmt(st['trigger'])} (rejection low) → puts**" + (f" ({contract})" if contract else "")
-             + f". {tgt}. Invalid: daily close above {fmt(st['invalid'])} ({st['inv_lab']})."
-             + (f" Reward/risk to T1: {st['rr']:.1f}" if st["rr"] == st["rr"] else "")]
+             f"Levels: rejection low {fmt(st['trigger'])} · below that {nxt} · "
+             f"bearish structure fails on a daily close above {fmt(st['invalid'])} ({st['inv_lab']})"]
     if st["td_buy9"]:
-        lines.append("⚠ TD buy 9 in — bounce risk")
+        lines.append("⚠ TD buy 9 in: bounce risk")
     if earn:
         lines.append(f"⚠ earnings {earn}")
     return "\n".join(lines)
@@ -413,26 +418,17 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
         rr = st["rr"] if st["rr"] == st["rr"] else -1
         cands.append((st["score"], st["stage"] == "Rolling over", rr, s, m, st))
     cands.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-    blocks, rows, skipped_wide = [], [], []
-    for sc, _, _, s, m, st in cands:
-        if len(blocks) == config.WL_TOP_N:
-            break
-        contract = None
-        if client is not None:
-            contract, status = pick_contract(client, s, "bear", st["trigger"], nxt.date())
-            if contract is None:
-                skipped_wide.append(s)
-                continue
-        blocks.append(put_block(s, m, st, contract, None))
+    blocks, rows = [], []
+    for sc, _, _, s, m, st in cands[:config.WL_TOP_N]:
+        blocks.append(put_block(s, m, st, None))
         t = st["targets"] + [(np.nan, "")] * 2
         rows.append({"date": today.strftime("%Y-%m-%d"), "symbol": s, "side": "bear", "score": sc, "close": m["close"],
                      "trigger": st["trigger"], "t1": t[0][0], "t2": t[1][0] if t[1][0] == t[1][0] else t[0][0],
-                     "invalid": st["invalid"], "contract": contract, "status": "open",
+                     "invalid": st["invalid"], "contract": "", "status": "open",
                      "triggered_date": None, "resolved_date": None})
-    head = f"🔻 **Top put setups** — game plan for {nxt:%a %b %d} ({len(cands)} names qualified out of {len(mets)} scanned)"
-    if skipped_wide:
-        blocks.append(f"_Skipped, no tight contract near the trigger: {', '.join(skipped_wide[:8])}_")
-    msgs = chunk(head, blocks) if blocks else [head + "\nNo put setups passed today."]
+    head = (f"🔻 **Bearish watch** · names at the edge going into {nxt:%a %b %d} "
+            f"({len(cands)} of {len(mets)} scanned). Levels to watch, not trade calls.")
+    msgs = chunk(head, blocks) if blocks else [head + "\nNo names on the bearish watch today."]
 
     # ---- core watchlist (both directions)
     core = []
@@ -465,6 +461,6 @@ def build_messages(client, today: pd.Timestamp) -> list[str]:
     ideas = grade_ideas(ideas, frames, config.WL_TRACK_SESSIONS)
     ideas = pd.concat([ideas, pd.DataFrame(rows, columns=IDEA_COLS)], ignore_index=True)
     ideas.to_csv(config.WL_IDEAS_FILE, index=False)
-    if today.dayofweek == config.WL_SCORECARD_WEEKDAY:
+    if getattr(config, "WL_POST_SCORECARD", False) and today.dayofweek == config.WL_SCORECARD_WEEKDAY:
         msgs.append(scorecard(ideas))
     return msgs

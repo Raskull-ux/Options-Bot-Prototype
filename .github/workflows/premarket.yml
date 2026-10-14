@@ -2,12 +2,26 @@ name: Pre-market post
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Post even outside 8:00-9:35 AM ET or on a closed day (labeled 'Levels check', no ping)"
+        type: boolean
+        default: false
   schedule:
-    - cron: "15 13 * * 1-5"   # 9:15 AM ET in daylight time (8:15 AM ET in winter)
+    # 13:15 UTC = 9:15 AM ET in daylight time (8:15 AM ET in winter).
+    # GitHub often starts this hours late; premarket.py then skips the post
+    # instead of sending stale "pre-market" levels. For an on-time post, trigger
+    # this workflow from an external timer (see SCHEDULER_SETUP.md).
+    - cron: "15 13 * * 1-5"
+
+concurrency:
+  group: premarket
+  cancel-in-progress: false
 
 jobs:
   premarket:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,4 +33,5 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          FORCE_POST: ${{ inputs.force && 'true' || 'false' }}
         run: python premarket.py

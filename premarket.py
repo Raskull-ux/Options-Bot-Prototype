@@ -1,4 +1,9 @@
-# Pre-market post (~9:15 AM ET in summer, 8:15 AM ET in winter; GitHub cron runs in UTC).
+# Pre-market post, 9:15 AM ET.
+#
+# Timing guard: it only posts if the job starts between 8:00 and 9:35 AM ET on a
+# trading day (config.PREMARKET_WINDOW). GitHub's free scheduler often starts
+# jobs hours late; a late start posts nothing instead of afternoon "pre-market"
+# levels. A manual run with force=true posts anyway, labeled "Levels check".
 #
 # For the core watchlist plus yesterday's ranked picks: the pre-market price,
 # where it sits against last week's close (shown as a level), the nearest open
@@ -9,7 +14,7 @@ import os
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -20,6 +25,7 @@ from daily_readout import post
 from daily_watchlist import load_frames, gap_txt, fmt
 from lib import technicals as ta
 from lib.alpaca_client import AlpacaClient, DATA
+from lib.market_clock import in_window, is_trading_day, now_et
 
 ET = ZoneInfo("America/New_York")
 
@@ -38,10 +44,10 @@ def premarket_prices(client: AlpacaClient, symbols: list[str]) -> dict[str, tupl
     return out
 
 
-def line(sym: str, m: dict, px: float | None, live: bool, idea: dict | None) -> str:
+def line(sym: str, m: dict, px: float | None, live: bool, idea: dict | None, tag: str = "pre") -> str:
     c = m["close"]
     p = px if px is not None else c
-    head = f"**{sym} {fmt(p)}**" + (f" ({p / c - 1:+.1%} pre)" if live else " (no pre-market trade yet)")
+    head = f"**{sym} {fmt(p)}**" + (f" ({p / c - 1:+.1%} {tag})" if live else " (no trade yet today)")
     parts = [head]
     lw = m.get("lw_close", np.nan)
     if not np.isnan(lw):
@@ -55,16 +61,17 @@ def line(sym: str, m: dict, px: float | None, live: bool, idea: dict | None) -> 
     if idea is not None:
         trig, side = float(idea["trigger"]), idea["side"]
         through = p >= trig if side == "bull" else p <= trig
-        parts.append(f"yesterday: {'above' if side == 'bull' else 'below'} {fmt(trig)} → {'calls' if side == 'bull' else 'puts'}"
-                     + (" — **already through pre-market**" if through and live else " — not yet"))
+        parts.append(f"last night's watch level {fmt(trig)} ({'above' if side == 'bull' else 'below'}): "
+                     + (f"**already through ({tag})**" if through and live else "not yet"))
     return " · ".join(parts)
 
 
-def build(client) -> list[str]:
+def build(client, header: str, tag: str = "pre") -> list[str]:
     bars = pd.read_csv(config.BARS_FILE, parse_dates=["date"])
     try:
         ideas = pd.read_csv(config.WL_IDEAS_FILE)
-        last = ideas[ideas["date"] == ideas["date"].max()] if not ideas.empty else ideas
+        # only last night's names; an older list is not "last night's watch level"
+        last = ideas[ideas["date"] == bars["date"].max().strftime("%Y-%m-%d")]
     except FileNotFoundError:
         last = pd.DataFrame(columns=["symbol", "side", "trigger"])
     symbols = list(dict.fromkeys(config.CORE_WATCHLIST + list(last["symbol"])))
@@ -89,22 +96,43 @@ def build(client) -> list[str]:
         m["prev_body_hi"], m["prev_body_lo"] = max(o, c), min(o, c)
         idea = last[last["symbol"] == s].iloc[0] if s in set(last["symbol"]) else None
         p, live = px.get(s, (None, False))
-        lines.append(line(s, m, p, live, idea))
+        lines.append(line(s, m, p, live, idea, tag))
     from daily_watchlist import chunk
-    return chunk(f"🌅 **Pre-market** — {datetime.now(ET):%a %b %d, %I:%M %p} ET (IEX prices, thin before the open)", lines, sep="\n")
+    return chunk(header, lines, sep="\n")
 
 
 def main() -> int:
-    msgs = build(AlpacaClient())
+    force = "--force" in sys.argv or os.environ.get("FORCE_POST", "").strip().lower() == "true"
+    now = now_et()
+    client = AlpacaClient()
+    start, end = (datetime.strptime(x, "%H:%M").time() for x in config.PREMARKET_WINDOW)
+    on_time = in_window(now, start, end)
+    if not force:
+        if not is_trading_day(now.date(), client):
+            print(f"{now:%a %b %d}: market closed today. Nothing posted.")
+            return 0
+        if not on_time:
+            print(f"Started {now:%I:%M %p} ET, outside the {config.PREMARKET_WINDOW[0]}-{config.PREMARKET_WINDOW[1]} ET "
+                  f"window (GitHub schedule delay). Nothing posted.")
+            return 0
+    if on_time:
+        header = (f"🌅 **Pre-market** · {now:%a %b %d, %I:%M %p} ET · IEX prices (thin before the open). "
+                  f"Levels to watch, not trade calls.")
+        mention = config.PREMARKET_MENTION.strip()
+        if mention:
+            header = f"{mention}\n{header}"
+    else:
+        header = f"📍 **Levels check** · {now:%a %b %d, %I:%M %p} ET · latest IEX prices. Levels to watch, not trade calls."
+    msgs = build(client, header, "pre" if on_time else "today")
     if not msgs:
-        print("No pre-market trades today (holiday or too early) - nothing posted.")
+        print("No trades yet today (holiday or too early). Nothing posted.")
         return 0
     url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     if not url or "--dry-run" in sys.argv:
         print("\n\n".join(msgs))
         return 0
     for m in msgs:
-        post(m, url)
+        post(m, url, config.PREMARKET_MENTION if on_time else "")
         time.sleep(1.0)
     print(f"Posted {len(msgs)} pre-market messages.")
     return 0

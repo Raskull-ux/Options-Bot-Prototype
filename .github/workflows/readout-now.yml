@@ -2,10 +2,23 @@ name: Send market readout now
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Post even if tonight's readout was already sent or the data is a day old"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: discord-data
+  cancel-in-progress: false
 
 jobs:
   readout:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,4 +30,12 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          FORCE_POST: ${{ inputs.force && 'true' || 'false' }}
         run: python daily_readout.py
+      - name: Save the posted marker and watchlist log
+        run: |
+          git config user.name "options-bot"
+          git config user.email "options-bot@users.noreply.github.com"
+          git add data/readout_last_posted.txt data/watchlist_ideas.csv || true
+          if git diff --cached --quiet; then echo "No changes."; else
+            git commit -m "Readout posted: $(date -u +%Y-%m-%d)"; git pull --rebase --autostash; git push; fi
