@@ -7,13 +7,21 @@ on:
     # Weekdays only; a market holiday just means near-empty new bars, which
     # the script logs as per-symbol errors rather than failing the run.
     - cron: "30 21 * * 1-5"
+    # GitHub often starts this hours late. daily_readout.py posts once per data
+    # date and drops the @everyone ping after 7 PM ET. For an on-time post,
+    # trigger this workflow from an external timer (see SCHEDULER_SETUP.md).
 
 permissions:
   contents: write
 
+concurrency:
+  group: discord-data
+  cancel-in-progress: false
+
 jobs:
   collect:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -50,5 +58,6 @@ jobs:
             echo "No data changes to commit."
           else
             git commit -m "Daily data collection: $(date -u +%Y-%m-%d)"
+            git pull --rebase --autostash
             git push
           fi

@@ -285,11 +285,24 @@ READOUT_MENTION = "@everyone"
 # When to ping: "always" (every readout) or "stress" (only when the VIX curve is
 # inverted or the panic state is on -- avoids training people to ignore it).
 READOUT_PING_WHEN = "always"
+# The evening readout only pings if it actually posts before this time (ET).
+# GitHub often starts the evening job hours late; nobody gets pinged at 10 PM.
+READOUT_PING_CUTOFF = "19:00"
+# Last data date the evening readout was posted for. Stops repeat posts on
+# market holidays and when the job runs twice. Committed with the data files.
+READOUT_POSTED_FILE = f"{DATA_DIR}/readout_last_posted.txt"
+
+# --- Pre-market post (premarket.py) ---
+# Posts only if the job starts inside this window (ET). A late GitHub start
+# skips the post instead of sending "pre-market" levels in the afternoon.
+PREMARKET_WINDOW = ("08:00", "09:35")
+# The one ping of the day. Only used when the post goes out on time.
+PREMARKET_MENTION = "@everyone"
 
 # --- Daily watchlist (daily_watchlist.py) ---
 WATCHLIST_ENABLED = True
 CORE_WATCHLIST = ["SPY", "QQQ", "NVDA", "TSLA", "AMD", "META", "NFLX", "COIN", "INTC", "AAPL"]
-WL_TOP_N = 6                     # put setups per day
+WL_TOP_N = 6                     # names on the bearish watch per day
 WL_MIN_SCORE = 6                 # out of 9 checks to qualify for the ranked lists
 WL_MIN_PRICE = 20.0
 WL_MIN_DOLLAR_VOL = 100_000_000  # 20-day avg; keeps option markets tradeable
@@ -299,6 +312,7 @@ WL_EARNINGS_WARN_DAYS = 14       # names reporting within this many days are EXC
 WL_EXHAUSTION_N = 8
 WL_TRACK_SESSIONS = 5            # each idea is graded over the next 5 sessions
 WL_SCORECARD_WEEKDAY = 4         # Friday
+WL_POST_SCORECARD = False        # levels-only posts: grading stays private in WL_IDEAS_FILE
 WL_IDEAS_FILE = f"{DATA_DIR}/watchlist_ideas.csv"
 WL_UNIVERSE_TOP = 100            # scan core list + the 100 most-traded names by 20-day dollar volume
 WL_MAX_SPREAD = 0.10             # skip contracts whose bid/ask spread exceeds 10% of mid

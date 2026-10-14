@@ -8,6 +8,12 @@
 #
 # Needs env DISCORD_WEBHOOK_URL. Without it (or with --dry-run) the message is
 # printed to the log instead of posted, and the run still succeeds.
+#
+# Timing guards (GitHub's scheduler often starts this job hours late):
+#   * posts once per data date: no repeat on market holidays or double runs
+#   * skips if the data is older than the latest closed session (collector miss)
+#   * pings only if it posts before config.READOUT_PING_CUTOFF (ET)
+#   --force (or FORCE_POST=true) skips the first two checks for manual sends.
 import os
 import sys
 import traceback
@@ -18,6 +24,7 @@ import requests
 
 import config
 from lib.earnings_data import load_earnings
+from lib.market_clock import latest_closed_session, now_et
 
 DISCORD_LIMIT = 1990
 
@@ -105,7 +112,7 @@ def flags_section(signals: pd.DataFrame, today_str: str) -> list[str]:
     return out
 
 
-def build_message() -> str:
+def build_message(ping_ok: bool = True) -> str:
     reg = pd.read_csv(config.REGIME_STATE_FILE).sort_values("date")
     r = reg.iloc[-1]
     today = pd.Timestamp(r["date"])
@@ -126,17 +133,19 @@ def build_message() -> str:
         lines += [""] + er
     if fl:
         lines += [""] + fl
-    lines += ["", "_Data readout, not trade advice. No research signal has passed a real-price backtest._"]
+    lines += ["", "_Market data and levels only. Not financial advice. Nothing in these posts is a tested trading signal._"]
     stress = flag(r.get("vix_inverted")) or flag(r.get("panic_state"))
     mention = config.READOUT_MENTION.strip()
-    if mention and (config.READOUT_PING_WHEN == "always" or stress):
-        lines.insert(0, mention + (" - STRESS CONDITIONS" if stress else ""))
+    if mention and ping_ok and (config.READOUT_PING_WHEN == "always" or stress):
+        lines.insert(0, mention + (" · STRESS CONDITIONS" if stress else ""))
+    elif stress:
+        lines.insert(0, "⚠ **STRESS CONDITIONS**")
     msg = "\n".join(lines)
     return msg if len(msg) <= DISCORD_LIMIT else msg[:DISCORD_LIMIT - 3] + "..."
 
 
-def post(msg: str, url: str) -> None:
-    m = config.READOUT_MENTION.strip()
+def post(msg: str, url: str, mention: str | None = None) -> None:
+    m = (config.READOUT_MENTION if mention is None else mention).strip()
     allowed = {"parse": ["everyone"]} if m in ("@everyone", "@here") else (
         {"parse": [], "roles": [m[3:-1]]} if m.startswith("<@&") else {"parse": []})
     r = requests.post(url, json={"content": msg, "allowed_mentions": allowed}, timeout=20)
@@ -157,8 +166,8 @@ def gauge_line(client) -> str:
             f"candle {g['candle_days_so_far']}/10 days in. Big-picture gauge, not a signal.")
 
 
-def all_messages() -> list[str]:
-    msgs = [build_message()]
+def all_messages(ping_ok: bool = True) -> list[str]:
+    msgs = [build_message(ping_ok)]
     try:
         from lib.alpaca_client import AlpacaClient
         if os.environ.get("APCA_API_KEY_ID"):
@@ -178,22 +187,59 @@ def all_messages() -> list[str]:
             client = None
         try:
             msgs += daily_watchlist.build_messages(client, today)
-        except Exception as ex:
+        except Exception:
             traceback.print_exc()
-            msgs.append(f"(watchlist failed today: {type(ex).__name__} - check the Actions log)")
+            msgs.append("_The watchlist section is unavailable tonight. Levels will be back next session._")
     return msgs
 
 
+def data_date() -> pd.Timestamp:
+    return pd.Timestamp(pd.read_csv(config.REGIME_STATE_FILE).sort_values("date").iloc[-1]["date"])
+
+
+def last_posted() -> str:
+    try:
+        with open(config.READOUT_POSTED_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+
+
 def main() -> int:
-    msgs = all_messages()
+    force = "--force" in sys.argv or os.environ.get("FORCE_POST", "").strip().lower() == "true"
+    dry = "--dry-run" in sys.argv
+    now = now_et()
+    try:
+        from lib.alpaca_client import AlpacaClient
+        cal_client = AlpacaClient() if os.environ.get("APCA_API_KEY_ID") else None
+    except Exception:
+        cal_client = None
+    d = data_date().date()
+    if not force:
+        if d.isoformat() == last_posted():
+            print(f"Readout for {d} was already posted (market holiday or a repeat run). Nothing posted.")
+            return 0
+        expected = latest_closed_session(now, cal_client)
+        if d < expected:
+            print(f"Data is for {d} but the latest closed session is {expected}: the collector is missing "
+                  f"today's bars. Nothing posted. Re-run 'Send market readout now' after the data lands.")
+            return 0
+    cutoff = datetime.strptime(config.READOUT_PING_CUTOFF, "%H:%M").time()
+    # ping only on the session's own evening, between the 4 PM close and the cutoff
+    ping_ok = now.date() == d and datetime.strptime("16:00", "%H:%M").time() <= now.time() < cutoff
+    print(f"Started {now:%a %b %d %I:%M %p} ET · data date {d} · ping {'on' if ping_ok else 'off (outside 4:00 PM-' + config.READOUT_PING_CUTOFF + ' ET on the session day)'}")
+    msgs = all_messages(ping_ok)
     url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    if "--dry-run" in sys.argv or not url:
+    if dry or not url:
         print(("(no DISCORD_WEBHOOK_URL set - printing instead)\n" if not url else "(dry run)\n")
               + "\n\n---- next message ----\n\n".join(msgs))
         return 0
     import time
-    for m in msgs:
+    for i, m in enumerate(msgs):
         post(m, url)
+        if i == 0:  # mark as posted once the first message is out, so a re-run can't double-post
+            with open(config.READOUT_POSTED_FILE, "w") as f:
+                f.write(d.isoformat() + "\n")
         time.sleep(1.0)
     print(f"Posted {len(msgs)} messages to Discord.")
     return 0
