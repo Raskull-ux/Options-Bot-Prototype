@@ -56,6 +56,9 @@ class AlpacaClient:
         """
         out: dict[str, list[dict]] = {}
         start = (datetime.now(timezone.utc) - timedelta(days=int(lookback_days * 1.6) + 10)).strftime("%Y-%m-%d")
+        # Free plan: SIP data from the last 15 minutes is off-limits. Without an explicit end, a run during
+        # after-hours trading (e.g. the 4:45 PM evening job) gets HTTP 403 and the whole collection fails.
+        end = (datetime.now(timezone.utc) - timedelta(minutes=16)).strftime("%Y-%m-%dT%H:%M:%SZ")
         batch_size = 100
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i : i + batch_size]
@@ -65,6 +68,7 @@ class AlpacaClient:
                     "symbols": ",".join(batch),
                     "timeframe": "1Day",
                     "start": start,
+                    "end": end,
                     "feed": feed,
                     "limit": 10000,
                     "adjustment": "split",
