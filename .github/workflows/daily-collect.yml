@@ -2,6 +2,9 @@ name: Daily data collection
 
 on:
   workflow_dispatch:
+  # On-time start: a scheduled task sends this signal at 4:45 PM ET on weekdays.
+  repository_dispatch:
+    types: [evening]
   schedule:
     # 21:30 UTC = 5:30pm EDT / 4:30pm EST -- after market close year-round.
     # Weekdays only; a market holiday just means near-empty new bars, which
