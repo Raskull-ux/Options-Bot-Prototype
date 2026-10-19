@@ -14,10 +14,10 @@ EXHAUSTION_TIERS = ((90, "EXTREME"), (85, "ELEVATED"), (80, "EARLY"))
 
 
 def rsi(close: pd.Series, n: int = 14) -> pd.Series:
-    """Wilder's RSI (the standard charting-platform RSI)."""
+    """RSI with EXPONENTIAL averaging (Taz's chart setting: RSI 14 exponential). Verified QQQ 2026-10-16 = 20.87."""
     d = close.diff()
-    up = d.clip(lower=0).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
-    dn = (-d.clip(upper=0)).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
+    up = d.clip(lower=0).ewm(span=n, adjust=False, min_periods=n).mean()
+    dn = (-d.clip(upper=0)).ewm(span=n, adjust=False, min_periods=n).mean()
     out = 100 - 100 / (1 + up / dn)
     return out.where(dn != 0, 100.0)
 
