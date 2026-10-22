@@ -7,6 +7,7 @@ on:
     paths:
       - fetch_intraday_bars.py
       - .github/workflows/fetch-intraday.yml
+      - data/intraday/refresh.txt
 
 permissions:
   contents: write
