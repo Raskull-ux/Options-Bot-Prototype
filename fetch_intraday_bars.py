@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 
 from lib.alpaca_client import AlpacaClient, DATA
 
-SYMBOLS = os.environ.get("STUDY_SYMBOLS", "QQQ,AAPL,SMH,HOOD,MRNA").split(",")
+SYMBOLS = os.environ.get("STUDY_SYMBOLS", "QQQ,SPY,TSLA,NVDA,AMD,META,NFLX,COIN,AAPL,INTC,HOOD,MSTR,MRNA,SMH").split(",")
 TIMEFRAMES = ["5Min", "15Min", "1Hour"]
 # Long daily history for bar-pattern analogs (e.g. MRNA 2020 vs today)
 DAILY_SYMBOLS = [s for s in os.environ.get("DAILY_SYMBOLS", "MRNA,QQQ,AAPL,HOOD,SMH").split(",") if s]
 DAILY_START = os.environ.get("DAILY_START", "2019-01-01")
-START = os.environ.get("STUDY_START", "2026-08-01")
+START = os.environ.get("STUDY_START", "2026-09-15")
 OUT_DIR = "data/intraday"
 
 
