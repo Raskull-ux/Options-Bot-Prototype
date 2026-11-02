@@ -10,12 +10,7 @@ on:
   # On-time start: a scheduled task sends this signal at 9:10 AM ET on weekdays.
   repository_dispatch:
     types: [premarket]
-  schedule:
-    # 13:15 UTC = 9:15 AM ET in daylight time (8:15 AM ET in winter).
-    # GitHub often starts this hours late; premarket.py then skips the post
-    # instead of sending stale "pre-market" levels. For an on-time post, trigger
-    # this workflow from an external timer (see SCHEDULER_SETUP.md).
-    - cron: "15 13 * * 1-5"
+  # schedule removed 2026-11-02: the pre-market post is replaced by the Watchlist bot in Tazmanian-Trader-Bot
 
 concurrency:
   group: premarket
